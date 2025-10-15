@@ -13,9 +13,18 @@ class AuctionCreation(StatesGroup):
     waiting_for_photo = State()
     waiting_for_start_price = State()
     waiting_for_min_step = State()
+    waiting_for_cooldown_minutes = State()
+    waiting_for_cooldown_off_before_end = State()
     waiting_for_blitz_price = State()
     waiting_for_end_time = State()
 
 
 class Bidding(StatesGroup):
     waiting_for_bid_amount = State()
+
+
+
+class AdminActions(StatesGroup):
+    waiting_for_ban_id = State()
+    waiting_for_unban_id = State()
+    waiting_for_decline_reason = State()

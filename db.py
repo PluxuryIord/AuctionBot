@@ -58,9 +58,15 @@ async def init_db():
                                status             TEXT DEFAULT 'active', -- active, finished, canceled
                                winner_id          BIGINT,
                                final_price        REAL,
-                               channel_message_id BIGINT
+                               channel_message_id BIGINT,
+                               cooldown_minutes INTEGER DEFAULT 10,
+                               cooldown_off_before_end_minutes INTEGER DEFAULT 30
                            );
                            ''')
+        # На случай, если таблица уже существовала раньше — добавим новые столбцы
+        await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS cooldown_minutes INTEGER DEFAULT 10")
+        await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS cooldown_off_before_end_minutes INTEGER DEFAULT 30")
+
         await conn.execute('''
                            CREATE TABLE IF NOT EXISTS bids
                            (
@@ -117,14 +123,71 @@ async def create_auction(data: Dict[str, Any]) -> int:
     """Создает новый аукцион и возвращает его ID."""
     sql = """
           INSERT INTO auctions
-          (title, description, photo_id, start_price, min_step, blitz_price, end_time)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (title, description, photo_id, start_price, min_step, cooldown_minutes, cooldown_off_before_end_minutes, blitz_price, end_time)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
           RETURNING auction_id; \
           """
     async with pool.acquire() as conn:
-        auction_id = await conn.fetchval(sql, data['title'], data['description'], data['photo'],
-                                         data['start_price'], data['min_step'], data['blitz_price'], data['end_time'])
+        auction_id = await conn.fetchval(
+            sql,
+            data['title'],
+            data['description'],
+            data['photo'],
+            data['start_price'],
+            data['min_step'],
+            data['cooldown_minutes'],
+            data['cooldown_off_before_end_minutes'],
+            data.get('blitz_price'),
+            data['end_time']
+        )
         return auction_id
+
+async def get_auctions(limit: int = 10) -> List[Dict[str, Any]]:
+    """Возвращает последние аукционы (активные и завершенные)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM auctions ORDER BY auction_id DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+
+async def count_auctions() -> int:
+    """Возвращает общее количество аукционов."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchval("SELECT COUNT(*) FROM auctions")
+        return int(row)
+
+
+async def get_auctions_page(limit: int, offset: int) -> List[Dict[str, Any]]:
+    """Возвращает страницу аукционов."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM auctions ORDER BY auction_id DESC LIMIT $1 OFFSET $2",
+            limit, offset
+        )
+        return [dict(r) for r in rows]
+
+
+
+async def update_auction_end_time(auction_id: int, new_end_time):
+    """Обновляет время окончания аукциона."""
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE auctions SET end_time = $1 WHERE auction_id = $2", new_end_time, auction_id)
+
+
+async def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
+    """Возвращает пользователя по username (без @)."""
+    if username.startswith('@'):
+        username = username[1:]
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM users WHERE username = $1", username)
+        return dict(row) if row else None
+
+
+async def get_user_by_phone(phone: str) -> Optional[Dict[str, Any]]:
+    """Возвращает пользователя по номеру телефона."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM users WHERE phone_number = $1", phone)
+        return dict(row) if row else None
+
+
 
 
 async def get_active_auction() -> Optional[Dict[str, Any]]:
@@ -178,6 +241,44 @@ async def get_user_last_bid_time(user_id: int, auction_id: int) -> Optional[str]
     async with pool.acquire() as conn:
         return await conn.fetchval(sql, user_id, auction_id)
 
+
+
+
+async def get_top_bids(auction_id: int, limit: int = 5) -> list[dict]:
+    """Возвращает топ-N ставок (по сумме, затем по времени) с данными пользователя."""
+    sql = (
+        "SELECT b.bid_id, b.auction_id, b.user_id, b.bid_amount, b.bid_time, u.username, u.full_name "
+        "FROM bids b JOIN users u ON b.user_id = u.user_id "
+        "WHERE b.auction_id = $1 "
+        "ORDER BY b.bid_amount DESC, b.bid_time ASC LIMIT $2"
+    )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, auction_id, limit)
+        return [dict(r) for r in rows]
+
+
+async def get_bid_by_id(bid_id: int) -> dict | None:
+    """Возвращает одну ставку по bid_id."""
+    sql = "SELECT b.*, u.username, u.full_name FROM bids b JOIN users u ON b.user_id = u.user_id WHERE bid_id = $1"
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(sql, bid_id)
+        return dict(row) if row else None
+
+
+async def get_users_with_bid_stats() -> list[dict]:
+    """Возвращает список пользователей с агрегированной статистикой по ставкам."""
+    sql = (
+        "SELECT u.user_id, u.username, u.full_name, u.phone_number, u.status, "
+        "       COALESCE(COUNT(b.bid_id), 0) AS bids_count, "
+        "       COALESCE(SUM(b.bid_amount), 0) AS bids_sum "
+        "FROM users u "
+        "LEFT JOIN bids b ON b.user_id = u.user_id "
+        "GROUP BY u.user_id, u.username, u.full_name, u.phone_number, u.status "
+        "ORDER BY bids_sum DESC, bids_count DESC"
+    )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql)
+        return [dict(r) for r in rows]
 
 async def get_expired_active_auctions() -> list[dict]:
     """Возвращает список активных аукционов, время которых истекло."""
