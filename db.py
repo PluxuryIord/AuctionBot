@@ -1,0 +1,187 @@
+import asyncpg
+import logging
+import os
+from dotenv import load_dotenv
+from typing import List, Dict, Any, Optional
+
+# Загружаем переменные окружения
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Глобальный пул соединений для повышения производительности
+pool = None
+
+
+async def create_pool():
+    """Инициализирует пул соединений с базой данных."""
+    global pool
+    if pool is None:
+        try:
+            pool = await asyncpg.create_pool(DATABASE_URL)
+            logging.info("Пул соединений с PostgreSQL успешно создан.")
+        except Exception as e:
+            logging.critical(f"Не удалось создать пул соединений с PostgreSQL: {e}")
+            # В реальном приложении здесь можно остановить работу бота
+            exit()
+
+
+async def init_db():
+    """
+    Создает таблицы в базе данных, если они еще не существуют.
+    Выполняется один раз при старте бота.
+    """
+    await create_pool()  # Убедимся, что пул создан
+    async with pool.acquire() as conn:
+        await conn.execute('''
+                           CREATE TABLE IF NOT EXISTS users
+                           (
+                               user_id           BIGINT PRIMARY KEY,
+                               username          TEXT,
+                               full_name         TEXT,
+                               phone_number      TEXT,
+                               status            TEXT        DEFAULT 'pending', -- pending, approved, banned
+                               registration_date TIMESTAMPTZ DEFAULT NOW()
+                           );
+                           ''')
+        await conn.execute('''
+                           CREATE TABLE IF NOT EXISTS auctions
+                           (
+                               auction_id         SERIAL PRIMARY KEY,
+                               title              TEXT,
+                               description        TEXT,
+                               photo_id           TEXT,
+                               start_price        REAL,
+                               min_step           REAL DEFAULT 1000,
+                               max_step           REAL DEFAULT 10000,
+                               blitz_price        REAL,
+                               end_time           TIMESTAMPTZ,
+                               status             TEXT DEFAULT 'active', -- active, finished, canceled
+                               winner_id          BIGINT,
+                               final_price        REAL,
+                               channel_message_id BIGINT
+                           );
+                           ''')
+        await conn.execute('''
+                           CREATE TABLE IF NOT EXISTS bids
+                           (
+                               bid_id     SERIAL PRIMARY KEY,
+                               auction_id INTEGER REFERENCES auctions (auction_id) ON DELETE CASCADE,
+                               user_id    BIGINT REFERENCES users (user_id) ON DELETE CASCADE,
+                               bid_amount REAL,
+                               bid_time   TIMESTAMPTZ DEFAULT NOW()
+                           );
+                           ''')
+        logging.info("Проверка таблиц в БД завершена.")
+
+
+# --- Функции для работы с пользователями (Users) ---
+
+async def add_user_request(user_id: int, username: str, full_name: str, phone_number: str):
+    """Добавляет заявку на регистрацию пользователя в статусе 'pending'."""
+    sql = """
+          INSERT INTO users (user_id, username, full_name, phone_number, status)
+          VALUES ($1, $2, $3, $4, 'pending')
+          ON CONFLICT (user_id) DO UPDATE SET full_name    = EXCLUDED.full_name,
+                                              phone_number = EXCLUDED.phone_number,
+                                              status       = 'pending',
+                                              username     = EXCLUDED.username; \
+          """
+    async with pool.acquire() as conn:
+        await conn.execute(sql, user_id, username, full_name, phone_number)
+
+
+async def get_user_status(user_id: int) -> Optional[str]:
+    """Получает статус пользователя по его ID."""
+    async with pool.acquire() as conn:
+        status = await conn.fetchval("SELECT status FROM users WHERE user_id = $1", user_id)
+        return status
+
+
+async def update_user_status(user_id: int, status: str):
+    """Обновляет статус пользователя (approved, banned)."""
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET status = $1 WHERE user_id = $2", status, user_id)
+        logging.info(f"Статус пользователя {user_id} обновлен на {status}.")
+
+
+async def update_user_username(user_id: int, username: str):
+    """Обновляет username пользователя при каждом взаимодействии."""
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET username = $1 WHERE user_id = $2 AND username IS DISTINCT FROM $1",
+                           username, user_id)
+
+
+# --- Функции для работы с аукционами (Auctions) ---
+
+async def create_auction(data: Dict[str, Any]) -> int:
+    """Создает новый аукцион и возвращает его ID."""
+    sql = """
+          INSERT INTO auctions
+          (title, description, photo_id, start_price, min_step, blitz_price, end_time)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING auction_id; \
+          """
+    async with pool.acquire() as conn:
+        auction_id = await conn.fetchval(sql, data['title'], data['description'], data['photo'],
+                                         data['start_price'], data['min_step'], data['blitz_price'], data['end_time'])
+        return auction_id
+
+
+async def get_active_auction() -> Optional[Dict[str, Any]]:
+    """Возвращает данные текущего активного аукциона."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM auctions WHERE status = 'active' ORDER BY auction_id DESC LIMIT 1")
+        return dict(row) if row else None
+
+
+async def set_auction_message_id(auction_id: int, message_id: int):
+    """Сохраняет ID сообщения аукциона в канале."""
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE auctions SET channel_message_id = $1 WHERE auction_id = $2", message_id, auction_id)
+
+
+async def finish_auction(auction_id: int, winner_id: Optional[int], final_price: Optional[float]):
+    """Завершает аукцион, обновляя его статус и данные о победителе."""
+    sql = "UPDATE auctions SET status = 'finished', winner_id = $1, final_price = $2 WHERE auction_id = $3"
+    async with pool.acquire() as conn:
+        await conn.execute(sql, winner_id, final_price, auction_id)
+        logging.info(f"Аукцион {auction_id} завершен. Победитель: {winner_id}, цена: {final_price}")
+
+
+# --- Функции для работы со ставками (Bids) ---
+
+async def add_bid(auction_id: int, user_id: int, amount: float):
+    """Добавляет новую ставку в базу данных."""
+    sql = "INSERT INTO bids (auction_id, user_id, bid_amount) VALUES ($1, $2, $3)"
+    async with pool.acquire() as conn:
+        await conn.execute(sql, auction_id, user_id, amount)
+
+
+async def get_last_bid(auction_id: int) -> Optional[Dict[str, Any]]:
+    """Получает последнюю (самую высокую) ставку на аукционе."""
+    sql = """
+          SELECT b.bid_amount, u.username, b.user_id
+          FROM bids b
+                   JOIN users u ON b.user_id = u.user_id
+          WHERE b.auction_id = $1
+          ORDER BY b.bid_amount DESC, b.bid_time ASC
+          LIMIT 1; \
+          """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(sql, auction_id)
+        return dict(row) if row else None
+
+
+async def get_user_last_bid_time(user_id: int, auction_id: int) -> Optional[str]:
+    """Возвращает время последней ставки пользователя на конкретном аукционе."""
+    sql = "SELECT bid_time FROM bids WHERE user_id = $1 AND auction_id = $2 ORDER BY bid_time DESC LIMIT 1"
+    async with pool.acquire() as conn:
+        return await conn.fetchval(sql, user_id, auction_id)
+
+
+async def get_expired_active_auctions() -> list[dict]:
+    """Возвращает список активных аукционов, время которых истекло."""
+    sql = "SELECT * FROM auctions WHERE status = 'active' AND end_time <= NOW()"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql)
+        return [dict(row) for row in rows]
