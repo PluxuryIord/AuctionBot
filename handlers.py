@@ -20,27 +20,13 @@ import kb
 from states import Registration, AuctionCreation, Bidding, AdminActions
 
 # Загружаем переменные окружения
-ADMIN_ID = os.getenv("ADMIN_ID")  # для обратной совместимости (один админ)
-ADMIN_IDS_ENV = os.getenv("ADMIN_IDS", "")  # список ID через запятую: 111,222,333
+ADMIN_ID = os.getenv("ADMIN_ID")
+ADMIN_IDS = os.getenv("ADMIN_IDS").split(",")
+ADMIN_IDS = list(map(int, ADMIN_IDS))
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
-
-# Разбор списка админов
-ADMIN_IDS: set[int] = set()
-for part in ADMIN_IDS_ENV.replace(" ", "").split(","):
-    if part:
-        try:
-            ADMIN_IDS.add(int(part))
-        except Exception:
-            pass
-
-def is_admin_id(uid: int) -> bool:
-    """Проверка пользователя на права админа (мульти-админы + обратная совместимость)."""
-    if ADMIN_ID and str(uid) == ADMIN_ID:
-        return True
-    return uid in ADMIN_IDS
 
 
 async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
@@ -71,7 +57,7 @@ async def user_status_middleware(handler, event, data):
     if not user:
         return await handler(event, data)
 
-    if is_admin_id(user.id):
+    if int(user.id) in ADMIN_IDS:
         return await handler(event, data)
 
     # Обновляем username при каждом взаимодействии
@@ -247,7 +233,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
 async def cmd_start(message: Message, state: FSMContext):
     """Обработчик команды /start."""
     user_status = await db.get_user_status(message.from_user.id)
-    if is_admin_id(message.from_user.id):
+    if int(message.from_user.id) in ADMIN_IDS:
         await message.answer("Добро пожаловать в аукцион!", reply_markup=kb.get_main_menu_admin())
     elif user_status == 'banned':
         await message.answer("Ваш доступ к боту заблокирован.")
@@ -354,13 +340,8 @@ async def process_phone(message: Message, state: FSMContext, bot: Bot):
         )
     except TelegramAPIError as e:
         logging.error(f"Не удалось отправить заявку в админ-чат: {e}")
-        # Резервное уведомление всем личным администраторам
-        for admin_uid in (list(ADMIN_IDS) or ([int(ADMIN_ID)] if ADMIN_ID else [])):
-            try:
-                await message.bot.send_message(admin_uid,
-                                               "Не удалось отправить заявку в админ-чат. Проверьте ID чата и права бота.")
-            except Exception:
-                pass
+        await message.bot.send_message(ADMIN_ID,
+                                       "Не удалось отправить заявку в админ-чат. Проверьте ID чата и права бота.")
 
     await state.clear()
 
@@ -370,8 +351,6 @@ async def process_phone(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data.startswith("approve_user_"))
 async def approve_user(callback: CallbackQuery, bot: Bot):
     """Одобрение заявки пользователя."""
-    if not is_admin_id(callback.from_user.id):
-        return await callback.answer("Нет доступа", show_alert=True)
     try:
         user_id = int(callback.data.split("_")[2])
     except Exception:
@@ -389,7 +368,7 @@ async def approve_user(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data.startswith("decline_user_"))
 async def decline_user(callback: CallbackQuery, state: FSMContext):
     """Отклонение заявки пользователя: запросить причину (опционально)."""
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     try:
         target_user_id = int(callback.data.split("_")[2])
@@ -522,7 +501,7 @@ async def menu_contact(callback: CallbackQuery):
 
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery):
-    keyboard = kb.get_main_menu_admin() if is_admin_id(callback.from_user.id) else kb.get_main_menu()
+    keyboard = kb.get_main_menu_admin() if int(callback.from_user.id) in ADMIN_IDS else kb.get_main_menu()
 
     # Если сейчас показана карточка лота (фото/подпись), удаляем её и отправляем новое текстовое меню,
     # чтобы не оставался "меню с фото".
@@ -557,7 +536,7 @@ async def back_to_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data == "admin_menu")
 async def admin_menu(callback: CallbackQuery, state: FSMContext):
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     await callback.bot.edit_message_text(
         chat_id=callback.message.chat.id,
@@ -570,7 +549,7 @@ async def admin_menu(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "admin_create")
 async def admin_create(callback: CallbackQuery, state: FSMContext):
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     await create_auction_start(callback.message, state)
     await callback.answer()
@@ -578,7 +557,7 @@ async def admin_create(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "admin_finish")
 async def admin_finish(callback: CallbackQuery, bot: Bot):
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     active = await db.get_active_auction()
     if not active:
@@ -597,7 +576,7 @@ async def admin_finish(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data == "admin_winner_none")
 async def admin_winner_none(callback: CallbackQuery, bot: Bot):
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     active = await db.get_active_auction()
     if not active:
@@ -620,7 +599,7 @@ async def admin_winner_none(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data.startswith("admin_winner_bid_"))
 async def admin_winner_bid(callback: CallbackQuery, bot: Bot):
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     try:
         bid_id = int(callback.data.split("_")[-1])
@@ -662,7 +641,7 @@ async def admin_winner_bid(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data == "admin_ban")
 async def admin_ban(callback: CallbackQuery, state: FSMContext):
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     await state.set_state(AdminActions.waiting_for_ban_id)
     await callback.bot.edit_message_text(
@@ -676,7 +655,7 @@ async def admin_ban(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "admin_unban")
 async def admin_unban(callback: CallbackQuery, state: FSMContext):
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     await state.set_state(AdminActions.waiting_for_unban_id)
     await callback.bot.edit_message_text(
@@ -688,11 +667,8 @@ async def admin_unban(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(StateFilter(AdminActions.waiting_for_ban_id))
+@router.message(StateFilter(AdminActions.waiting_for_ban_id), F.from_user.id.in_(ADMIN_IDS))
 async def admin_ban_handle(message: Message, state: FSMContext):
-    if not is_admin_id(message.from_user.id):
-        await message.answer("Нет доступа")
-        return
     text = message.text.strip()
     target_user_id = None
 
@@ -724,12 +700,8 @@ async def admin_ban_handle(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.message(StateFilter(AdminActions.waiting_for_unban_id))
+@router.message(StateFilter(AdminActions.waiting_for_unban_id), F.from_user.id.in_(ADMIN_IDS))
 async def admin_unban_handle(message: Message, state: FSMContext):
-    if not is_admin_id(message.from_user.id):
-        await message.answer("Нет доступа")
-        return
-
     text = message.text.strip()
     target_user_id = None
 
@@ -835,7 +807,7 @@ async def make_bid_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
 async def check_subscription_generic(callback: CallbackQuery, bot: Bot):
     """Глобальная проверка подписки: если подписан — показываем главное меню."""
     if await is_user_subscribed(bot, callback.from_user.id):
-        keyboard = kb.get_main_menu_admin() if is_admin_id(callback.from_user.id) else kb.get_main_menu()
+        keyboard = kb.get_main_menu_admin() if int(callback.from_user.id) in ADMIN_IDS else kb.get_main_menu()
         # Если текущее сообщение — фото, удаляем и отправляем новое текстовое меню
         if getattr(callback.message, "photo", None) or callback.message.caption is not None:
             try:
@@ -1084,21 +1056,15 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
 
 # --- 5. АДМИН-ПАНЕЛЬ ---
 
-@router.message(Command("admin"))
+@router.message(Command("admin"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_panel(message: Message):
     """Инлайн админ-меню."""
-    if not is_admin_id(message.from_user.id):
-        await message.answer("Нет доступа")
-        return
     await message.answer("Админ-панель: выберите действие", reply_markup=kb.admin_menu_keyboard())
 
 
 # --- Создание аукциона (FSM) ---
-@router.message(Command("create_auction"))
+@router.message(Command("create_auction"), F.from_user.id.in_ADMIN_IDS)
 async def create_auction_start(message: Message, state: FSMContext):
-    if not is_admin_id(message.from_user.id):
-        await message.answer("Нет доступа")
-        return
     active_auction = await db.get_active_auction()
     if active_auction:
         await message.answer("Нельзя создать новый аукцион, пока не завершен предыдущий.")
@@ -1256,11 +1222,8 @@ async def process_auction_end_time(message: Message, state: FSMContext, bot: Bot
         await state.clear()
 
 
-@router.message(Command("finish_auction"))
+@router.message(Command("finish_auction"), F.from_user.id.in_(ADMIN_IDS))
 async def finish_auction_command(message: Message, bot: Bot):
-    if not is_admin_id(message.from_user.id):
-        await message.answer("Нет доступа")
-        return
     active_auction = await db.get_active_auction()
     if not active_auction:
         await message.answer("Нет активных аукционов для завершения.")
@@ -1307,7 +1270,7 @@ async def finish_auction_command(message: Message, bot: Bot):
 
 @router.callback_query(F.data == "admin_export_users")
 async def admin_export_users(callback: CallbackQuery):
-    if not is_admin_id(callback.from_user.id):
+    if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
     rows = await db.get_users_with_bid_stats()
     # Готовим CSV (можно открыть в Excel); кодировка UTF-8 BOM для корректного открытия кириллицы в Excel
