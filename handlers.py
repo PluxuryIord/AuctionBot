@@ -1,4 +1,3 @@
-
 import os
 import re
 import pytz
@@ -37,6 +36,7 @@ async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
     except Exception as e:
         logging.warning(f"Не удалось проверить подписку пользователя {user_id}: {e}")
         return False
+
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
@@ -93,7 +93,8 @@ async def user_status_middleware(handler, event, data):
         bot_inst: Bot = data.get("bot")
     except Exception:
         bot_inst = None
-    allow_check = isinstance(event, CallbackQuery) and getattr(event, "data", None) and str(event.data).startswith("check_sub")
+    allow_check = isinstance(event, CallbackQuery) and getattr(event, "data", None) and str(event.data).startswith(
+        "check_sub")
     if bot_inst and not allow_check:
         try:
             subscribed = await is_user_subscribed(bot_inst, user.id)
@@ -137,7 +138,6 @@ async def user_status_middleware(handler, event, data):
                     pass
             return  # блокируем дальнейшую обработку
 
-
     return await handler(event, data)
 
 
@@ -151,8 +151,10 @@ def normalize_phone(phone: str) -> str:
         return '+7' + cleaned_phone[1:]
     return phone
 
+
 # Общие валидаторы/нормализаторы ввода
 NAME_ALLOWED_RE = re.compile(r"^[A-Za-zА-Яа-яЁё\-\s]{2,100}$")
+
 
 def clean_full_name(s: str) -> str:
     s = (s or "").strip()
@@ -160,18 +162,20 @@ def clean_full_name(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     return s
 
+
 def is_valid_full_name(s: str) -> bool:
     return bool(NAME_ALLOWED_RE.match(s))
+
 
 def parse_amount(s: str) -> float:
     # поддержка форматов вида "100 000,50" и т.п.
     s = (s or "").strip().replace(" ", "").replace(",", ".")
     return float(s)
 
+
 def csv_safe(s: str) -> str:
     s = s or ""
     return ("'" + s) if s[:1] in ("=", "+", "-", "@", "\t") else s
-
 
 
 async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = False) -> str:
@@ -227,6 +231,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
     )
     return text
 
+
 # --- 1. РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЕЙ ---
 
 @router.message(CommandStart(), StateFilter(default_state))
@@ -265,7 +270,6 @@ async def process_full_name(message: Message, state: FSMContext):
     )
 
 
-
 @router.message(StateFilter(Registration.waiting_for_phone), F.contact)
 async def process_phone_contact(message: Message, state: FSMContext, bot: Bot):
     """Обработка контакта с кнопки 'Отправить номер'."""
@@ -286,7 +290,8 @@ async def process_phone_contact(message: Message, state: FSMContext, bot: Bot):
         phone_number=phone_number
     )
 
-    await message.answer("Спасибо! Ваша заявка отправлена на модерацию. Ожидайте подтверждения.", reply_markup=kb.remove_reply_keyboard())
+    await message.answer("Спасибо! Ваша заявка отправлена на модерацию. Ожидайте подтверждения.",
+                         reply_markup=kb.remove_reply_keyboard())
     await state.clear()
 
     # Уведомляем админа
@@ -325,7 +330,8 @@ async def process_phone(message: Message, state: FSMContext, bot: Bot):
         phone_number=phone_number
     )
 
-    await message.answer("Спасибо! Ваша заявка отправлена на модерацию. Ожидайте подтверждения.", reply_markup=kb.remove_reply_keyboard())
+    await message.answer("Спасибо! Ваша заявка отправлена на модерацию. Ожидайте подтверждения.",
+                         reply_markup=kb.remove_reply_keyboard())
 
     try:
         await bot.send_message(
@@ -499,6 +505,7 @@ async def menu_contact(callback: CallbackQuery):
         reply_markup=kb.back_to_menu_keyboard()
     )
 
+
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery):
     keyboard = kb.get_main_menu_admin() if int(callback.from_user.id) in ADMIN_IDS else kb.get_main_menu()
@@ -571,7 +578,6 @@ async def admin_finish(callback: CallbackQuery, bot: Bot):
         reply_markup=kb.admin_select_winner_keyboard(top_bids)
     )
     await callback.answer()
-
 
 
 @router.callback_query(F.data == "admin_winner_none")
@@ -730,7 +736,6 @@ async def admin_unban_handle(message: Message, state: FSMContext):
     await state.clear()
 
 
-
 # --- 4. ЛОГИКА СТАВОК ---
 
 @router.callback_query(F.data.startswith("bid_auction_"))
@@ -811,7 +816,8 @@ async def check_subscription_generic(callback: CallbackQuery, bot: Bot):
         # Если текущее сообщение — фото, удаляем и отправляем новое текстовое меню
         if getattr(callback.message, "photo", None) or callback.message.caption is not None:
             try:
-                await callback.bot.delete_message(chat_id=callback.message.chat.id, message_id=callback.message.message_id)
+                await callback.bot.delete_message(chat_id=callback.message.chat.id,
+                                                  message_id=callback.message.message_id)
             except Exception:
                 pass
             await callback.message.answer("Добро пожаловать в аукцион!", reply_markup=keyboard)
@@ -825,10 +831,6 @@ async def check_subscription_generic(callback: CallbackQuery, bot: Bot):
         await callback.answer("Подписка подтверждена", show_alert=True)
     else:
         await callback.answer("Вы ещё не подписаны на канал", show_alert=True)
-
-
-
-
 
 
 @router.callback_query(F.data.startswith("check_sub_"))
@@ -857,9 +859,6 @@ async def check_subscription(callback: CallbackQuery, bot: Bot):
         await callback.answer("Подписка подтверждена", show_alert=True)
     else:
         await callback.answer("Вы ещё не подписаны на канал", show_alert=True)
-
-
-
 
 
 @router.callback_query(F.data.startswith("blitz_auction_"))
@@ -922,6 +921,7 @@ async def blitz_buy(callback: CallbackQuery, bot: Bot):
         logging.warning(f"Не удалось уведомить победителя {callback.from_user.id} после блиц-покупки: {e}")
 
     await callback.answer("Покупка по блиц-цене оформлена!", show_alert=True)
+
 
 @router.message(StateFilter(Bidding.waiting_for_bid_amount), F.text)
 async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
@@ -1020,7 +1020,6 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
     except Exception as e:
         logging.warning(f"Антиснайпинг не сработал: {e}")
 
-
     # Уведомляем предыдущего лидера
     if previous_leader and previous_leader != message.from_user.id:
         try:
@@ -1116,7 +1115,6 @@ async def process_auction_start_price(message: Message, state: FSMContext):
         await message.answer("Неверный формат. Введите число (например, 150000).")
 
 
-
 @router.message(StateFilter(AuctionCreation.waiting_for_min_step))
 async def process_auction_min_step(message: Message, state: FSMContext):
     try:
@@ -1140,7 +1138,8 @@ async def process_auction_cooldown_minutes(message: Message, state: FSMContext):
             return
         await state.update_data(cooldown_minutes=cooldown)
         await state.set_state(AuctionCreation.waiting_for_cooldown_off_before_end)
-        await message.answer("Шаг 7/9: За сколько минут до конца аукциона снять ограничение? (например: 30). Если введёте 0 — ограничений не будет:")
+        await message.answer(
+            "Шаг 7/9: За сколько минут до конца аукциона снять ограничение? (например: 30). Если введёте 0 — ограничений не будет:")
     except ValueError:
         await message.answer("Неверный формат. Введите целое число минут (например, 10).")
 
@@ -1188,13 +1187,15 @@ async def process_auction_end_time(message: Message, state: FSMContext, bot: Bot
         naive_end_time = datetime.strptime(message.text, "%d.%m.%Y %H:%M")
         end_time = MOSCOW_TZ.localize(naive_end_time)
         now = datetime.now(MOSCOW_TZ)
+
         if end_time <= now:
             await message.answer("Дата и время окончания должны быть в будущем. Укажите корректное время.")
-            return
-        # Минимальная длительность 10 минут
+            return  # Состояние не очищается, бот ждет новый ввод
+
         if end_time - now < timedelta(minutes=10):
             await message.answer("Минимальная длительность аукциона — 10 минут от текущего времени.")
-            return
+            return  # Состояние не очищается, бот ждет новый ввод
+
         await state.update_data(end_time=end_time)
 
         data = await state.get_data()
@@ -1213,13 +1214,16 @@ async def process_auction_end_time(message: Message, state: FSMContext, bot: Bot
         await db.set_auction_message_id(auction_id, sent_message.message_id)
         await message.answer(f"✅ Аукцион «{data['title']}» успешно создан и опубликован в канале.")
 
+        await state.clear()  # <--- Очищаем состояние ПОСЛЕ УСПЕХА
+
     except ValueError:
         await message.answer("Неверный формат даты. Пожалуйста, введите дату в формате: ДД.ММ.ГГГГ ЧЧ:ММ")
+
+
     except Exception as e:
         await message.answer(f"❌ Произошла ошибка при создании аукциона: {e}")
         logging.error(f"Ошибка создания аукциона: {e}")
-    finally:
-        await state.clear()
+        await state.clear()  # <--- Очищаем состояние ПОСЛЕ ОШИБКИ
 
 
 @router.message(Command("finish_auction"), F.from_user.id.in_(ADMIN_IDS))
@@ -1267,7 +1271,6 @@ async def finish_auction_command(message: Message, bot: Bot):
                 f"❗️ Не удалось отправить уведомление победителю {winner_id}. Свяжитесь с ним вручную.")
 
 
-
 @router.callback_query(F.data == "admin_export_users")
 async def admin_export_users(callback: CallbackQuery):
     if int(callback.from_user.id) not in ADMIN_IDS:
@@ -1294,4 +1297,3 @@ async def admin_export_users(callback: CallbackQuery):
     buf = BufferedInputFile(content_bytes, filename="users_export.csv")
     await callback.message.answer_document(document=buf, caption="Экспорт пользователей (CSV; откроется в Excel)")
     await callback.answer()
-
