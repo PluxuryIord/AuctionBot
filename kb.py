@@ -4,8 +4,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 )
-from aiogram.utils.keyboard import InlineKeyboardBuilder # Используем Builder
-
+from aiogram.utils.keyboard import InlineKeyboardBuilder  # Используем Builder
 
 
 def get_main_menu():
@@ -21,7 +20,8 @@ def get_auction_keyboard(auction_id, blitz_price=None):
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="Сделать ставку", callback_data=f"bid_auction_{auction_id}"))
     if blitz_price and blitz_price > 0:
-        builder.row(InlineKeyboardButton(text=f"⚡️ Блиц-цена: {blitz_price:,.0f} ₽", callback_data=f"blitz_auction_{auction_id}"))
+        builder.row(InlineKeyboardButton(text=f"⚡️ Блиц-цена: {blitz_price:,.0f} ₽",
+                                         callback_data=f"blitz_auction_{auction_id}"))
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
     return builder.as_markup()
 
@@ -41,17 +41,18 @@ def back_to_menu_keyboard():
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]]
     )
 
-# # --- НОВАЯ ФУНКЦИЯ ---
-# def cancel_fsm_keyboard(cancel_callback_data: str = "back_to_menu"):
-#     """
-#     Универсальная клавиатура для FSM с кнопкой "Отмена".
-#     """
-#     return InlineKeyboardMarkup(
-#         inline_keyboard=[
-#             [InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_callback_data)]
-#         ]
-#     )
-# ---
+
+# --- НОВАЯ ФУНКЦИЯ ---
+def cancel_fsm_keyboard(cancel_callback_data: str = "back_to_menu"):
+    """
+    Универсальная клавиатура для FSM с кнопкой "Отмена".
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_callback_data)]
+        ]
+    )
+
 
 def get_main_menu_admin():
     buttons = [
@@ -89,6 +90,7 @@ def admin_select_winner_keyboard(top_bids: list[dict]) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
 # --- НОВЫЕ КЛАВИАТУРЫ ---
 
 def admin_confirm_auction_keyboard() -> InlineKeyboardMarkup:
@@ -98,6 +100,7 @@ def admin_confirm_auction_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✏️ Редактировать", callback_data="auction_edit")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_menu")]
     ])
+
 
 def admin_edit_auction_fields_keyboard() -> InlineKeyboardMarkup:
     """Выбор поля для редактирования."""
@@ -122,6 +125,7 @@ def admin_edit_auction_fields_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="⬅️ Назад к подтверждению", callback_data="edit_field_back"))
     return builder.as_markup()
 
+
 # ---
 
 def contact_request_keyboard():
@@ -129,8 +133,9 @@ def contact_request_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📱 Отправить мой номер", request_contact=True)]],
         resize_keyboard=True,
-        one_time_keyboard=True # Кнопка исчезнет после нажатия
+        one_time_keyboard=True  # Кнопка исчезнет после нажатия
     )
+
 
 def remove_reply_keyboard():
     return ReplyKeyboardRemove()
@@ -141,13 +146,14 @@ def subscribe_keyboard(channel_url: str | None = None, auction_id: int = 0):
     builder = InlineKeyboardBuilder()
     # Если URL передан, добавляем кнопку подписки
     if channel_url:
-         builder.row(InlineKeyboardButton(text="📢 Подписаться на канал", url=channel_url))
+        builder.row(InlineKeyboardButton(text="📢 Подписаться на канал", url=channel_url))
     # Кнопка проверки подписки
     check_cb = f"check_sub_{auction_id}" if auction_id else "check_sub"
     builder.row(InlineKeyboardButton(text="🔄 Проверить подписку", callback_data=check_cb))
     # Кнопка Назад только для контекста аукциона
     if auction_id:
-        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"show_auction_{auction_id}")) # Возврат на карточку
+        builder.row(
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"show_auction_{auction_id}"))  # Возврат на карточку
     return builder.as_markup()
 
 
@@ -157,10 +163,10 @@ def auctions_pagination_keyboard(page: int, total: int, page_size: int = 5) -> I
     buttons = []
     nav_row = []
     if page > 1:
-        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"all_page_{page-1}"))
+        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"all_page_{page - 1}"))
     nav_row.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"))
     if page < total_pages:
-        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"all_page_{page+1}"))
+        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"all_page_{page + 1}"))
     if nav_row:
         buttons.append(nav_row)
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")])

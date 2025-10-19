@@ -75,7 +75,7 @@ async def user_status_middleware(handler, event, data):
     state: FSMContext = data.get('state')
     current_state = await state.get_state()
     if current_state and current_state.startswith("Registration:"):
-         return await handler(event, data) # Пропускаем регистрацию
+        return await handler(event, data)  # Пропускаем регистрацию
     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     status = await db.get_user_status(user.id)
@@ -91,12 +91,12 @@ async def user_status_middleware(handler, event, data):
     if block_reason:
         if isinstance(event, Message):
             # Если FSM активен (не регистрация), пытаемся удалить сообщение
-            if current_state is not None: # Проверяем, что состояние вообще есть
+            if current_state is not None:  # Проверяем, что состояние вообще есть
                 await safe_delete_message(event)
             await event.answer(block_reason)
         elif isinstance(event, CallbackQuery):
             await event.answer(block_reason, show_alert=True)
-        return # Прерываем дальнейшую обработку
+        return  # Прерываем дальнейшую обработку
 
     # Если статус 'approved' или None (и не FSM регистрации), пропускаем дальше
     # Проверка подписки для 'approved' теперь делается только при /start
@@ -138,7 +138,6 @@ def csv_safe(s: str) -> str:
     return ("'" + s) if s[:1] in ("=", "+", "-", "@", "\t") else s
 
 
-
 async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = False) -> str:
     """Форматирует текст поста для канала (с кликабельными именами)."""
     last_bid = await db.get_last_bid(auction_data['auction_id'])
@@ -151,7 +150,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
     if last_bid:
         user_id = last_bid['user_id']
         username = last_bid.get('username')
-        full_name = last_bid.get('full_name') or f"User {user_id}" # Fallback
+        full_name = last_bid.get('full_name') or f"User {user_id}"  # Fallback
         if username:
             winner_display = f"@{username}"
         else:
@@ -175,7 +174,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
 
     # Активный аукцион
     current_price = last_bid['bid_amount'] if last_bid else auction_data['start_price']
-    leader_text = winner_display # Используем уже отформатированное имя
+    leader_text = winner_display  # Используем уже отформатированное имя
     end_time_dt = auction_data['end_time'].astimezone(MOSCOW_TZ)
 
     top_bids = await db.get_top_bids(auction_data['auction_id'], limit=5)
@@ -186,7 +185,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
             # --- ФОРМАТИРОВАНИЕ ИМЕНИ В ИСТОРИИ ---
             user_id_hist = b['user_id']
             username_hist = b.get('username')
-            full_name_hist = b.get('full_name') or f"User {user_id_hist}" # Fallback
+            full_name_hist = b.get('full_name') or f"User {user_id_hist}"  # Fallback
             user_disp = ""
             if username_hist:
                 user_disp = f"@{username_hist}"
@@ -211,6 +210,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
         f"Для участия и ставок перейдите в нашего бота: @{bot_info.username}"
     )
     return text
+
 
 async def find_user_by_text(text: str) -> int | None:
     """Вспомогательная функция для бана/разбана."""
@@ -271,16 +271,16 @@ async def render_registration_card(bot: Bot, chat_id: int, state: FSMContext, pr
             message_id=menu_message_id,
             text=text,
             parse_mode="HTML",
-            reply_markup=None # Инлайн кнопок нет
+            reply_markup=None  # Инлайн кнопок нет
         )
     except TelegramAPIError as e:
         # Если сообщение не найдено (удалено?), сбрасываем FSM
         if "message to edit not found" in str(e):
-             logging.warning(f"Registration FSM message not found for user {chat_id}, clearing state.")
-             await state.clear()
-             await bot.send_message(chat_id, "Произошла ошибка во время регистрации. Пожалуйста, нажмите /start снова.")
+            logging.warning(f"Registration FSM message not found for user {chat_id}, clearing state.")
+            await state.clear()
+            await bot.send_message(chat_id, "Произошла ошибка во время регистрации. Пожалуйста, нажмите /start снова.")
         else:
-             logging.warning(f"Failed to edit registration card: {e}")
+            logging.warning(f"Failed to edit registration card: {e}")
 
 
 @router.message(CommandStart())
@@ -288,11 +288,11 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     """
     Обработчик /start. Проверяет подписку для новых пользователей.
     """
-    await state.clear() # Сбрасываем состояние в любом случае
+    await state.clear()  # Сбрасываем состояние в любом случае
 
     user_id = message.from_user.id
     user_status = await db.get_user_status(user_id)
-    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/test_auction2" # Fallback URL
+    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/test_auction2"  # Fallback URL
 
     if int(user_id) in ADMIN_IDS:
         await message.answer("Добро пожаловать в аукцион! (Админ)", reply_markup=kb.get_main_menu_admin())
@@ -307,7 +307,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
                 f"Для пользования ботом необходимо быть подписанным на наш канал:\n"
                 f"{channel_url}\n\n"
                 f"Подпишитесь и нажмите ‘Проверить подписку’.",
-                reply_markup=kb.subscribe_keyboard(channel_url) # auction_id=0
+                reply_markup=kb.subscribe_keyboard(channel_url)  # auction_id=0
             )
         else:
             await message.answer("Добро пожаловать в аукцион!", reply_markup=kb.get_main_menu())
@@ -319,7 +319,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
                 f"Здравствуйте! Для регистрации и участия в аукционе необходимо быть подписанным на наш канал:\n"
                 f"{channel_url}\n\n"
                 f"Подпишитесь и нажмите ‘Проверить подписку’.",
-                reply_markup=kb.subscribe_keyboard(channel_url) # auction_id=0
+                reply_markup=kb.subscribe_keyboard(channel_url)  # auction_id=0
             )
         else:
             # Если уже подписан, начинаем FSM регистрации
@@ -328,7 +328,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
                 "Здравствуйте! Вы подписаны на канал, начинаем регистрацию.\n\n"
                 f"{hbold('Введите ваше ФИО:')}",
                 parse_mode="HTML",
-                reply_markup=None # Без кнопки Отмена
+                reply_markup=None  # Без кнопки Отмена
             )
             await state.update_data(menu_message_id=menu_msg.message_id)
 
@@ -359,7 +359,7 @@ async def process_full_name(message: Message, state: FSMContext, bot: Bot):
         state=state,
         prompt=(
             f"Отлично! Теперь {hbold('отправьте ваш номер телефона')} (+7XXXXXXXXXX)\n"
-            "или прикрепите свой контакт (📎 -> Контакт)." # Убрали упоминание кнопки
+            "или прикрепите свой контакт (📎 -> Контакт)."  # Убрали упоминание кнопки
         )
     )
     # Reply клавиатуру НЕ отправляем
@@ -367,7 +367,7 @@ async def process_full_name(message: Message, state: FSMContext, bot: Bot):
 
 async def complete_registration(message: Message, state: FSMContext, bot: Bot, phone_number: str):
     """Общая функция для завершения регистрации."""
-    await safe_delete_message(message) # Удаляем сообщение пользователя (текст или контакт)
+    await safe_delete_message(message)  # Удаляем сообщение пользователя (текст или контакт)
 
     data = await state.get_data()
     menu_message_id = data.get('menu_message_id')
@@ -403,7 +403,7 @@ async def complete_registration(message: Message, state: FSMContext, bot: Bot, p
             chat_id=message.chat.id,
             message_id=menu_message_id,
             text="✅ Спасибо! Ваша заявка отправлена на модерацию. Ожидайте подтверждения.",
-            reply_markup=None # Убираем инлайн кнопки
+            reply_markup=None  # Убираем инлайн кнопки
         )
         # Сообщение с ReplyKeyboardRemove НЕ отправляем
     except TelegramAPIError:
@@ -791,7 +791,8 @@ async def admin_winner_bid(callback: CallbackQuery, bot: Bot):
         return await callback.answer("Аукцион уже не активен", show_alert=True)
 
     await db.finish_auction(active['auction_id'], bid['user_id'], bid['bid_amount'])
-    finished_post_text = await format_auction_post(active, bot, finished=True) # format_auction_post уже содержит нужную логику
+    finished_post_text = await format_auction_post(active, bot,
+                                                   finished=True)  # format_auction_post уже содержит нужную логику
     try:
         await bot.edit_message_caption(
             chat_id=CHANNEL_ID,
@@ -816,15 +817,15 @@ async def admin_winner_bid(callback: CallbackQuery, bot: Bot):
     winner_fullname = bid.get('full_name') or f"User {winner_id}"
     winner_display_admin = ""
     if winner_username:
-         winner_display_admin = f"@{winner_username}"
+        winner_display_admin = f"@{winner_username}"
     else:
-         winner_display_admin = f'<a href="tg://user?id={winner_id}">{escape(winner_fullname)}</a>'
+        winner_display_admin = f'<a href="tg://user?id={winner_id}">{escape(winner_fullname)}</a>'
     # ---
 
     await callback.message.edit_text(
         f"Аукцион завершён. Победитель: {winner_display_admin} за {bid['bid_amount']:,.2f} руб.",
         reply_markup=kb.admin_menu_keyboard(),
-        parse_mode="HTML" # Добавляем parse_mode
+        parse_mode="HTML"  # Добавляем parse_mode
     )
     await callback.answer("Аукцион закрыт", show_alert=True)
 
@@ -936,7 +937,7 @@ async def show_auction_card(callback: CallbackQuery, state: FSMContext, bot: Bot
 # handlers.py
 
 # ИЗМЕНЕН ХЭНДЛЕР ПРОВЕРКИ ПОДПИСКИ (ОСНОВНОЙ)
-@router.callback_query(F.data == "check_sub") # check_sub без auction_id
+@router.callback_query(F.data == "check_sub")  # check_sub без auction_id
 async def check_subscription_generic(callback: CallbackQuery, bot: Bot, state: FSMContext):
     """
     Обработка кнопки "Проверить подписку" (для новых пользователей или одобренных).
@@ -944,7 +945,7 @@ async def check_subscription_generic(callback: CallbackQuery, bot: Bot, state: F
     """
     user_id = callback.from_user.id
     subscribed = await is_user_subscribed(bot, user_id)
-    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/test_auction2" # Fallback URL
+    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/test_auction2"  # Fallback URL
 
     if subscribed:
         user_status = await db.get_user_status(user_id)
@@ -957,13 +958,13 @@ async def check_subscription_generic(callback: CallbackQuery, bot: Bot, state: F
             await callback.answer()
         elif user_status is None:
             # Новый пользователь подписался -> начинаем FSM регистрации
-            await callback.message.delete() # Удаляем сообщение с кнопкой проверки
+            await callback.message.delete()  # Удаляем сообщение с кнопкой проверки
             await state.set_state(Registration.waiting_for_full_name)
             menu_msg = await callback.message.answer(
                 "Подписка подтверждена! Начинаем регистрацию.\n\n"
                 f"{hbold('Введите ваше ФИО:')}",
                 parse_mode="HTML",
-                reply_markup=None # Без кнопки Отмена
+                reply_markup=None  # Без кнопки Отмена
             )
             await state.update_data(menu_message_id=menu_msg.message_id)
             await callback.answer("Подписка подтверждена!", show_alert=True)
@@ -971,11 +972,12 @@ async def check_subscription_generic(callback: CallbackQuery, bot: Bot, state: F
             # Ситуация (pending/banned?), просто сообщаем
             await callback.answer("Подписка подтверждена.", show_alert=True)
             # Можно обновить сообщение для pending/banned, если нужно
-            if callback.message.text: # Редактируем только если было текстовое сообщение
-                 try:
-                      current_text = "Ваша заявка на рассмотрении." if user_status == 'pending' else "Ваш доступ заблокирован."
-                      await callback.message.edit_text(current_text, reply_markup=None)
-                 except TelegramAPIError: pass
+            if callback.message.text:  # Редактируем только если было текстовое сообщение
+                try:
+                    current_text = "Ваша заявка на рассмотрении." if user_status == 'pending' else "Ваш доступ заблокирован."
+                    await callback.message.edit_text(current_text, reply_markup=None)
+                except TelegramAPIError:
+                    pass
     else:
         # Все еще не подписан - ПРОСТО ПОКАЗЫВАЕМ АЛЕРТ
         await callback.answer("Вы ещё не подписаны на канал.", show_alert=True)
