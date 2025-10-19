@@ -221,14 +221,14 @@ async def add_bid(auction_id: int, user_id: int, amount: float):
 
 
 async def get_last_bid(auction_id: int) -> Optional[Dict[str, Any]]:
-    """Получает последнюю (самую высокую) ставку на аукционе."""
+    """Получает последнюю (самую высокую) ставку на аукционе, включая full_name."""
     sql = """
-          SELECT b.bid_amount, u.username, b.user_id
+          SELECT b.bid_amount, u.username, b.user_id, u.full_name
           FROM bids b
-                   JOIN users u ON b.user_id = u.user_id
+          JOIN users u ON b.user_id = u.user_id
           WHERE b.auction_id = $1
           ORDER BY b.bid_amount DESC, b.bid_time ASC
-          LIMIT 1; \
+          LIMIT 1;
           """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(sql, auction_id)

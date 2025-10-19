@@ -41,16 +41,16 @@ def back_to_menu_keyboard():
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]]
     )
 
-# --- НОВАЯ ФУНКЦИЯ ---
-def cancel_fsm_keyboard(cancel_callback_data: str = "back_to_menu"):
-    """
-    Универсальная клавиатура для FSM с кнопкой "Отмена".
-    """
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_callback_data)]
-        ]
-    )
+# # --- НОВАЯ ФУНКЦИЯ ---
+# def cancel_fsm_keyboard(cancel_callback_data: str = "back_to_menu"):
+#     """
+#     Универсальная клавиатура для FSM с кнопкой "Отмена".
+#     """
+#     return InlineKeyboardMarkup(
+#         inline_keyboard=[
+#             [InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_callback_data)]
+#         ]
+#     )
 # ---
 
 def get_main_menu_admin():
@@ -96,7 +96,7 @@ def admin_confirm_auction_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Опубликовать", callback_data="auction_post")],
         [InlineKeyboardButton(text="✏️ Редактировать", callback_data="auction_edit")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="auction_cancel")]
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_menu")]
     ])
 
 def admin_edit_auction_fields_keyboard() -> InlineKeyboardMarkup:
@@ -125,29 +125,30 @@ def admin_edit_auction_fields_keyboard() -> InlineKeyboardMarkup:
 # ---
 
 def contact_request_keyboard():
-    # (Этот хэндлер и клавиатура больше не используются в FSM регистрации,
-    # но оставлены на случай, если понадобятся.
-    # Новый FSM регистрации использует только текст и F.contact)
+    """Кнопка запроса контакта."""
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
+        keyboard=[[KeyboardButton(text="📱 Отправить мой номер", request_contact=True)]],
         resize_keyboard=True,
-        one_time_keyboard=True
+        one_time_keyboard=True # Кнопка исчезнет после нажатия
     )
 
 def remove_reply_keyboard():
     return ReplyKeyboardRemove()
 
 
-def subscribe_keyboard(channel_url: str | None, auction_id: int):
-    # (без изменений)
-    rows = []
+def subscribe_keyboard(channel_url: str | None = None, auction_id: int = 0):
+    """Клавиатура для проверки подписки."""
+    builder = InlineKeyboardBuilder()
+    # Если URL передан, добавляем кнопку подписки
     if channel_url:
-        rows.append([InlineKeyboardButton(text="📢 Подписаться", url=channel_url)])
+         builder.row(InlineKeyboardButton(text="📢 Подписаться на канал", url=channel_url))
+    # Кнопка проверки подписки
     check_cb = f"check_sub_{auction_id}" if auction_id else "check_sub"
-    rows.append([InlineKeyboardButton(text="🔄 Проверить подписку", callback_data=check_cb)])
+    builder.row(InlineKeyboardButton(text="🔄 Проверить подписку", callback_data=check_cb))
+    # Кнопка Назад только для контекста аукциона
     if auction_id:
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"show_auction_{auction_id}")) # Возврат на карточку
+    return builder.as_markup()
 
 
 def auctions_pagination_keyboard(page: int, total: int, page_size: int = 5) -> InlineKeyboardMarkup:
@@ -164,3 +165,10 @@ def auctions_pagination_keyboard(page: int, total: int, page_size: int = 5) -> I
         buttons.append(nav_row)
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def admin_cancel_fsm_keyboard():
+    """Кнопка Отмена, ведущая в админ-меню."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_menu")]
+    ])
