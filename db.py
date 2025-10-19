@@ -77,6 +77,23 @@ async def init_db():
                                bid_time   TIMESTAMPTZ DEFAULT NOW()
                            );
                            ''')
+
+        # --- НОВАЯ ТАБЛИЦА SETTINGS ---
+        await conn.execute('''
+                           CREATE TABLE IF NOT EXISTS settings
+                           (
+                               setting_key   TEXT PRIMARY KEY,
+                               setting_value TEXT
+                           );
+                           ''')
+        # Устанавливаем значение по умолчанию для автопринятия (если еще не установлено)
+        await conn.execute('''
+                           INSERT INTO settings (setting_key, setting_value)
+                           VALUES ('auto_approve_enabled', 'false')
+                           ON CONFLICT (setting_key) DO NOTHING;
+                           ''')
+        # --- КОНЕЦ НОВОЙ ТАБЛИЦЫ ---
+
         logging.info("Проверка таблиц в БД завершена.")
 
 
@@ -115,6 +132,33 @@ async def update_user_username(user_id: int, username: str):
     async with pool.acquire() as conn:
         await conn.execute("UPDATE users SET username = $1 WHERE user_id = $2 AND username IS DISTINCT FROM $1",
                            username, user_id)
+
+
+
+async def get_pending_users() -> List[Dict[str, Any]]:
+    """Возвращает список пользователей в статусе 'pending'."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id, username, full_name, phone_number FROM users WHERE status = 'pending'")
+        return [dict(r) for r in rows]
+
+async def bulk_update_user_status(user_ids: List[int], status: str):
+    """Массово обновляет статус пользователей."""
+    if not user_ids:
+        return 0
+    # Преобразуем список ID в строку для запроса (1, 2, 3)
+    ids_tuple = tuple(user_ids)
+    sql = f"UPDATE users SET status = $1 WHERE user_id = ANY($2::bigint[])"
+    async with pool.acquire() as conn:
+        result = await conn.execute(sql, status, ids_tuple)
+        # result возвращает строку вида "UPDATE N", извлекаем N
+        try:
+            updated_count = int(result.split()[-1])
+            logging.info(f"Массово обновлен статус {updated_count} пользователей на '{status}'.")
+            return updated_count
+        except (IndexError, ValueError):
+            logging.warning(f"Не удалось получить количество обновленных строк при bulk_update_user_status.")
+            return 0
+
 
 
 # --- Функции для работы с аукционами (Auctions) ---
@@ -286,3 +330,21 @@ async def get_expired_active_auctions() -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql)
         return [dict(row) for row in rows]
+
+
+
+async def get_auto_approve_status() -> bool:
+    """Проверяет, включено ли автопринятие заявок."""
+    async with pool.acquire() as conn:
+        value = await conn.fetchval("SELECT setting_value FROM settings WHERE setting_key = 'auto_approve_enabled'")
+        return value == 'true' # Сравниваем со строкой 'true'
+
+async def set_auto_approve_status(enabled: bool):
+    """Включает или выключает автопринятие заявок."""
+    value_str = 'true' if enabled else 'false'
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE settings SET setting_value = $1 WHERE setting_key = 'auto_approve_enabled'",
+            value_str
+        )
+        logging.info(f"Автопринятие заявок установлено в: {enabled}")

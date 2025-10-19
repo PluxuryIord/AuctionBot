@@ -389,51 +389,77 @@ async def complete_registration(message: Message, state: FSMContext, bot: Bot, p
         # Reply кнопку НЕ показываем
         return
 
-    # Сохраняем заявку
-    await db.add_user_request(
-        user_id=message.from_user.id,
-        username=message.from_user.username,
-        full_name=full_name,
-        phone_number=phone_number
-    )
+    auto_approve_enabled = await db.get_auto_approve_status()
 
-    # Редактируем меню FSM в последний раз
+    if auto_approve_enabled:
+        # Автоматически одобряем
+        await db.add_user_request(  # Сначала добавляем или обновляем данные
+            user_id=message.from_user.id,
+            username=message.from_user.username,
+            full_name=full_name,
+            phone_number=phone_number
+        )
+        await db.update_user_status(message.from_user.id, 'approved')
+        status_message = "✅ Ваша заявка автоматически одобрена! Добро пожаловать!"
+        final_markup = kb.get_main_menu()  # Сразу даем главное меню
+        admin_notification_needed = False  # Админу не пишем
+        logging.info(f"Пользователь {message.from_user.id} автоматически одобрен.")
+    else:
+        # Отправляем на ручную модерацию
+        await db.add_user_request(
+            user_id=message.from_user.id,
+            username=message.from_user.username,
+            full_name=full_name,
+            phone_number=phone_number
+        )
+        status_message = "✅ Спасибо! Ваша заявка отправлена на модерацию. Ожидайте подтверждения."
+        final_markup = None  # Убираем кнопки
+        admin_notification_needed = True  # Пишем админу
+
+        # Редактируем меню FSM
     try:
         await bot.edit_message_text(
             chat_id=message.chat.id,
             message_id=menu_message_id,
-            text="✅ Спасибо! Ваша заявка отправлена на модерацию. Ожидайте подтверждения.",
-            reply_markup=None  # Убираем инлайн кнопки
+            text=status_message,
+            reply_markup=final_markup
         )
-        # Сообщение с ReplyKeyboardRemove НЕ отправляем
+        # Убираем Reply Keyboard, если она была
+        await bot.send_message(
+            message.chat.id,
+            "Регистрация завершена.",
+            reply_markup=kb.remove_reply_keyboard(),
+            disable_notification=True
+        )
+        # Удаляем временное сообщение "Регистрация завершена" через секунду
+        # TODO: Добавить удаление этого сообщения, если нужно
+
     except TelegramAPIError:
         pass
 
     await state.clear()
 
-    try:
-        # --- ФОРМАТИРОВАНИЕ ИМЕНИ ДЛЯ АДМИНА ---
-        user_info = message.from_user
-        user_display = ""
-        if user_info.username:
-            user_display = f"@{escape(user_info.username)}"
-        else:
-            # Используем first_name из объекта User, который всегда есть
+    # Уведомляем админа, если нужно
+    if admin_notification_needed:
+        try:
+            # --- Форматирование имени пользователя ---
+            user_info = message.from_user
             user_display = f'<a href="tg://user?id={user_info.id}">{escape(user_info.first_name)}</a>'
-        # ---
-
-        await bot.send_message(
-            int(ADMIN_CHAT_ID),
-            f"Новая заявка на регистрацию:\n\n"
-            f"ID: <code>{user_info.id}</code>\n"
-            f"Пользователь: {user_display}\n"  # Отображаем username или кликабельное имя
-            f"ФИО (из заявки): {escape(full_name or '')}\n"
-            f"Телефон: <code>{escape(phone_number)}</code>",
-            parse_mode="HTML",
-            reply_markup=kb.admin_approval_keyboard(user_info.id)
-        )
-    except Exception as e:
-        logging.error(f"Не удалось отправить заявку админу: {e}")
+            if user_info.username:
+                user_display = f"@{escape(user_info.username)}"
+            # ---
+            await bot.send_message(
+                int(ADMIN_CHAT_ID),
+                f"Новая заявка на регистрацию:\n\n"
+                f"ID: <code>{user_info.id}</code>\n"
+                f"Пользователь: {user_display}\n"
+                f"ФИО (из заявки): {escape(full_name or '')}\n"
+                f"Телефон: <code>{escape(phone_number)}</code>",
+                parse_mode="HTML",
+                reply_markup=kb.admin_approval_keyboard(user_info.id)
+            )
+        except Exception as e:
+            logging.error(f"Не удалось отправить заявку админу: {e}")
 
 
 @router.message(StateFilter(Registration.waiting_for_phone), F.contact)
@@ -703,30 +729,35 @@ async def back_to_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 @router.callback_query(F.data == "admin_menu")
 async def admin_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Возврат в админ-меню (также сбрасывает FSM)."""
     if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
 
     await state.clear()
 
     text = "Админ-панель: выберите действие"
-    kb_markup = kb.admin_menu_keyboard()
+    # Получаем актуальную клавиатуру
+    kb_markup = await kb.admin_menu_keyboard() # Используем await, т.к. функция стала async
 
     try:
+        # Всегда редактируем текст, так как админ-меню текстовое
         await bot.edit_message_text(
             chat_id=callback.message.chat.id,
             message_id=callback.message.message_id,
             text=text,
             reply_markup=kb_markup
         )
-    except TelegramAPIError:
+    except TelegramAPIError as e:
+        # Если не смогли отредактировать (например, сообщение удалено)
+        logging.warning(f"Failed to edit admin menu: {e}. Sending new one.")
         try:
+            # Попытка удалить старое, если возможно
             await callback.message.delete()
-        except TelegramAPIError:
-            pass
+        except TelegramAPIError: pass
+        # Отправляем новое
         await callback.message.answer(text, reply_markup=kb_markup)
 
     await callback.answer()
-
 
 @router.callback_query(F.data == "admin_finish")
 async def admin_finish(callback: CallbackQuery, bot: Bot):
@@ -1317,6 +1348,68 @@ async def admin_unban_handle(message: Message, state: FSMContext, bot: Bot):
         )
     except TelegramAPIError:
         pass
+
+
+@router.callback_query(F.data == "admin_toggle_auto_approve")
+async def toggle_auto_approve(callback: CallbackQuery, bot: Bot):
+    """Переключает статус автопринятия заявок."""
+    if int(callback.from_user.id) not in ADMIN_IDS:
+        return await callback.answer("Нет доступа", show_alert=True)
+
+    current_status = await db.get_auto_approve_status()
+    new_status = not current_status
+    await db.set_auto_approve_status(new_status)
+
+    # Обновляем клавиатуру в сообщении
+    new_kb_markup = await kb.admin_menu_keyboard()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=new_kb_markup)
+    except TelegramAPIError as e:
+        logging.error(f"Не удалось обновить клавиатуру админ-меню: {e}")
+
+    status_text = "ВКЛЮЧЕНО" if new_status else "ВЫКЛЮЧЕНО"
+    await callback.answer(f"Автопринятие заявок: {status_text}", show_alert=True)
+
+
+@router.callback_query(F.data == "admin_bulk_approve")
+async def bulk_approve_pending(callback: CallbackQuery, bot: Bot):
+    """Массово одобряет всех пользователей в статусе pending."""
+    if int(callback.from_user.id) not in ADMIN_IDS:
+        return await callback.answer("Нет доступа", show_alert=True)
+
+    pending_users = await db.get_pending_users()
+    if not pending_users:
+        return await callback.answer("Нет пользователей, ожидающих одобрения.", show_alert=True)
+
+    user_ids = [user['user_id'] for user in pending_users]
+    updated_count = await db.bulk_update_user_status(user_ids, 'approved')
+
+    await callback.answer(f"Одобрено {updated_count} пользователей.", show_alert=True)
+
+    # Опционально: уведомить пользователей (может вызвать проблемы с лимитами)
+    # for user_id in user_ids:
+    #     try:
+    #         await bot.send_message(user_id, "Ваша заявка одобрена!", reply_markup=kb.get_main_menu())
+    #     except TelegramAPIError:
+    #         pass
+
+
+@router.callback_query(F.data == "admin_bulk_decline")
+async def bulk_decline_pending(callback: CallbackQuery, bot: Bot):
+    """Массово отклоняет (банит) всех пользователей в статусе pending."""
+    if int(callback.from_user.id) not in ADMIN_IDS:
+        return await callback.answer("Нет доступа", show_alert=True)
+
+    pending_users = await db.get_pending_users()
+    if not pending_users:
+        return await callback.answer("Нет пользователей, ожидающих одобрения.", show_alert=True)
+
+    user_ids = [user['user_id'] for user in pending_users]
+    updated_count = await db.bulk_update_user_status(user_ids, 'banned') # Ставим статус banned
+
+    await callback.answer(f"Отклонено (забанено) {updated_count} пользователей.", show_alert=True)
+
+
 
 
 # --- 6. СОЗДАНИЕ АУКЦИОНА (ИНЛАЙН FSM) ---

@@ -64,16 +64,31 @@ def get_main_menu_admin():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def admin_menu_keyboard():
-    buttons = [
-        [InlineKeyboardButton(text="🆕 Создать аукцион", callback_data="admin_create")],
-        [InlineKeyboardButton(text="🛑 Завершить аукцион", callback_data="admin_finish")],
-        [InlineKeyboardButton(text="⛔️ Забанить пользователя", callback_data="admin_ban")],
-        [InlineKeyboardButton(text="✅ Разбанить пользователя", callback_data="admin_unban")],
-        [InlineKeyboardButton(text="📤 Экспорт пользователей", callback_data="admin_export_users")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+async def admin_menu_keyboard() -> InlineKeyboardMarkup:
+    """Генерирует клавиатуру админ-меню, включая статус автопринятия."""
+    from db import get_auto_approve_status # Импортируем здесь, чтобы избежать циклического импорта
+
+    auto_approve_enabled = await get_auto_approve_status()
+    auto_approve_text = "✅ Автопринятие ВКЛ" if auto_approve_enabled else "❌ Автопринятие ВЫКЛ"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🆕 Создать аукцион", callback_data="admin_create"))
+    builder.row(InlineKeyboardButton(text="🛑 Завершить аукцион", callback_data="admin_finish"))
+    builder.row(
+        InlineKeyboardButton(text="⛔️ Забанить", callback_data="admin_ban"),
+        InlineKeyboardButton(text="✅ Разбанить", callback_data="admin_unban")
+    )
+    # Кнопка автопринятия
+    builder.row(InlineKeyboardButton(text=auto_approve_text, callback_data="admin_toggle_auto_approve"))
+    # Кнопки массового управления
+    builder.row(
+        InlineKeyboardButton(text="👍 Одобрить ВСЕ заявки на регистрацию", callback_data="admin_bulk_approve"),
+        InlineKeyboardButton(text="👎 Отклонить ВСЕ заявки на регистрацию", callback_data="admin_bulk_decline")
+    )
+    builder.row(InlineKeyboardButton(text="📤 Экспорт пользователей", callback_data="admin_export_users"))
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
+
+    return builder.as_markup()
 
 
 def admin_select_winner_keyboard(top_bids: list[dict]) -> InlineKeyboardMarkup:
