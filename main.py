@@ -1,9 +1,13 @@
-# bot.py
+# main.py
 import asyncio
 import logging
 import os
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
+# --- ИЗМЕНЕНО ---
+# aiogram 3.7+ требует DefaultBotProperties
+from aiogram.client.default import DefaultBotProperties
+# ---
 from dotenv import load_dotenv
 
 from handlers import router
@@ -23,7 +27,9 @@ async def main():
         return
 
     # Инициализация бота и диспетчера
-    bot = Bot(token=bot_token)
+    # --- ИЗМЕНЕНО ---
+    bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode="HTML"))
+    # ---
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
@@ -34,6 +40,7 @@ async def main():
     await init_db()
 
     # Настройка и запуск планировщика
+    # --- ИЗМЕНЕНО: передаем bot ---
     scheduler = setup_scheduler(bot, timezone="Europe/Moscow")
     scheduler.start()
 

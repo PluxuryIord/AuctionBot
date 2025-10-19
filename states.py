@@ -18,10 +18,13 @@ class AuctionCreation(StatesGroup):
     waiting_for_blitz_price = State()
     waiting_for_end_time = State()
 
+    # --- НОВЫЕ СОСТОЯНИЯ ---
+    waiting_for_confirmation = State()  # Экран "Опубликовать / Редактировать"
+    waiting_for_edit_choice = State()  # Экран выбора поля для редактирования
+
 
 class Bidding(StatesGroup):
     waiting_for_bid_amount = State()
-
 
 
 class AdminActions(StatesGroup):

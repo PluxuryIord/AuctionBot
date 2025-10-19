@@ -1,5 +1,12 @@
+# kb.py
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder # Используем Builder
+
+
 
 def get_main_menu():
     buttons = [
@@ -11,11 +18,12 @@ def get_main_menu():
 
 
 def get_auction_keyboard(auction_id, blitz_price=None):
-    buttons = [
-        [InlineKeyboardButton(text="Сделать ставку", callback_data=f"bid_auction_{auction_id}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="Сделать ставку", callback_data=f"bid_auction_{auction_id}"))
+    if blitz_price and blitz_price > 0:
+        builder.row(InlineKeyboardButton(text=f"⚡️ Блиц-цена: {blitz_price:,.0f} ₽", callback_data=f"blitz_auction_{auction_id}"))
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
+    return builder.as_markup()
 
 
 def admin_approval_keyboard(user_id):
@@ -28,14 +36,22 @@ def admin_approval_keyboard(user_id):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-
-
-
 def back_to_menu_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]]
     )
 
+# --- НОВАЯ ФУНКЦИЯ ---
+def cancel_fsm_keyboard(cancel_callback_data: str = "back_to_menu"):
+    """
+    Универсальная клавиатура для FSM с кнопкой "Отмена".
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_callback_data)]
+        ]
+    )
+# ---
 
 def get_main_menu_admin():
     buttons = [
@@ -60,6 +76,7 @@ def admin_menu_keyboard():
 
 
 def admin_select_winner_keyboard(top_bids: list[dict]) -> InlineKeyboardMarkup:
+    # (без изменений)
     rows = []
     if top_bids:
         for i, b in enumerate(top_bids, start=1):
@@ -72,23 +89,57 @@ def admin_select_winner_keyboard(top_bids: list[dict]) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+# --- НОВЫЕ КЛАВИАТУРЫ ---
 
+def admin_confirm_auction_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки "Опубликовать / Редактировать / Отмена"."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Опубликовать", callback_data="auction_post")],
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data="auction_edit")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="auction_cancel")]
+    ])
 
+def admin_edit_auction_fields_keyboard() -> InlineKeyboardMarkup:
+    """Выбор поля для редактирования."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="Название", callback_data="edit_field_title"),
+        InlineKeyboardButton(text="Описание", callback_data="edit_field_desc")
+    )
+    builder.row(
+        InlineKeyboardButton(text="Фото", callback_data="edit_field_photo"),
+        InlineKeyboardButton(text="Старт. цена", callback_data="edit_field_price")
+    )
+    builder.row(
+        InlineKeyboardButton(text="Мин. шаг", callback_data="edit_field_step"),
+        InlineKeyboardButton(text="Блиц-цена", callback_data="edit_field_blitz")
+    )
+    builder.row(
+        InlineKeyboardButton(text="Кулдаун", callback_data="edit_field_cooldown"),
+        InlineKeyboardButton(text="Откл. Кулдаун", callback_data="edit_field_cooldown_off")
+    )
+    builder.row(InlineKeyboardButton(text="Время оконч.", callback_data="edit_field_time"))
+    builder.row(InlineKeyboardButton(text="⬅️ Назад к подтверждению", callback_data="edit_field_back"))
+    return builder.as_markup()
+
+# ---
 
 def contact_request_keyboard():
+    # (Этот хэндлер и клавиатура больше не используются в FSM регистрации,
+    # но оставлены на случай, если понадобятся.
+    # Новый FSM регистрации использует только текст и F.contact)
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
 
-
 def remove_reply_keyboard():
     return ReplyKeyboardRemove()
 
 
-
 def subscribe_keyboard(channel_url: str | None, auction_id: int):
+    # (без изменений)
     rows = []
     if channel_url:
         rows.append([InlineKeyboardButton(text="📢 Подписаться", url=channel_url)])
@@ -99,8 +150,8 @@ def subscribe_keyboard(channel_url: str | None, auction_id: int):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-
 def auctions_pagination_keyboard(page: int, total: int, page_size: int = 5) -> InlineKeyboardMarkup:
+    # (без изменений)
     total_pages = max(1, (total + page_size - 1) // page_size)
     buttons = []
     nav_row = []
