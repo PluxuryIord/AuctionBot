@@ -26,6 +26,8 @@ ADMIN_IDS = list(map(int, ADMIN_IDS))
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
+APPROVAL_MESSAGE = "✅ Ваша заявка одобрена! Добро пожаловать."
+REJECTION_MESSAGE = "❌ К сожалению, ваша заявка на регистрацию отклонена."
 
 
 async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
@@ -424,13 +426,13 @@ async def complete_registration(message: Message, state: FSMContext, bot: Bot, p
             text=status_message,
             reply_markup=final_markup
         )
-        # Убираем Reply Keyboard, если она была
-        await bot.send_message(
-            message.chat.id,
-            "Регистрация завершена.",
-            reply_markup=kb.remove_reply_keyboard(),
-            disable_notification=True
-        )
+        # # Убираем Reply Keyboard, если она была
+        # await bot.send_message(
+        #     message.chat.id,
+        #     "Регистрация завершена.",
+        #     reply_markup=kb.remove_reply_keyboard(),
+        #     disable_notification=True
+        # )
         # Удаляем временное сообщение "Регистрация завершена" через секунду
         # TODO: Добавить удаление этого сообщения, если нужно
 
@@ -510,6 +512,7 @@ async def process_phone_text(message: Message, state: FSMContext, bot: Bot):
 
 @router.callback_query(F.data.startswith("approve_user_"))
 async def approve_user(callback: CallbackQuery, bot: Bot):
+    """Одобрение заявки пользователя (индивидуально)."""
     if int(callback.from_user.id) not in ADMIN_IDS:
         return await callback.answer("Нет доступа", show_alert=True)
 
@@ -519,14 +522,20 @@ async def approve_user(callback: CallbackQuery, bot: Bot):
         return await callback.answer("Некорректный идентификатор", show_alert=True)
 
     await db.update_user_status(user_id, 'approved')
+    # Редактируем сообщение админа
     await callback.message.edit_text(f"✅ Пользователь {user_id} одобрен.")
 
     try:
-        await bot.send_message(user_id, "Ваша заявка одобрена! Теперь вы можете участвовать в аукционах.",
+        # Отправляем стандартное сообщение пользователю с главным меню
+        await bot.send_message(user_id, APPROVAL_MESSAGE,
                                reply_markup=kb.get_main_menu())
     except TelegramAPIError as e:
         logging.error(f"Не удалось уведомить пользователя {user_id} об одобрении: {e}")
-    await callback.answer()
+        # Сообщаем админу об ошибке уведомления
+        await callback.answer(f"Пользователь {user_id} одобрен, но не удалось отправить уведомление.", show_alert=True)
+        return # Выходим, чтобы не было двойного callback.answer()
+
+    await callback.answer(f"Пользователь {user_id} одобрен и уведомлен.")
 
 
 @router.callback_query(F.data.startswith("decline_user_"))
@@ -561,6 +570,7 @@ async def decline_user(callback: CallbackQuery, state: FSMContext):
 
 @router.message(StateFilter(AdminActions.waiting_for_decline_reason))
 async def decline_reason_process(message: Message, state: FSMContext, bot: Bot):
+    """Отклонение заявки пользователя (индивидуально, с причиной)."""
     await safe_delete_message(message)
 
     data = await state.get_data()
@@ -571,25 +581,29 @@ async def decline_reason_process(message: Message, state: FSMContext, bot: Bot):
 
     await db.update_user_status(target_user_id, 'banned')
 
-    notify_text = "К сожалению, ваша заявка на регистрацию была отклонена."
+    # Формируем стандартное сообщение + причину (если есть)
+    notify_text = REJECTION_MESSAGE
     if not no_reason:
-        notify_text += f"\nПричина: {reason}"
+        notify_text += f"\nПричина: {escape(reason)}"
 
     try:
         await bot.send_message(target_user_id, notify_text)
     except TelegramAPIError as e:
         logging.error(f"Не удалось уведомить пользователя {target_user_id} об отклонении: {e}")
 
+    # Возвращаем админа в админ-меню
     await state.clear()
+    kb_markup = await kb.admin_menu_keyboard() # Получаем актуальную клавиатуру
     try:
         await bot.edit_message_text(
             chat_id=message.chat.id,
             message_id=menu_message_id,
             text=f"❌ Заявка пользователя {target_user_id} отклонена.",
-            reply_markup=kb.admin_menu_keyboard()
+            reply_markup=kb_markup
         )
     except TelegramAPIError:
-        await message.answer("❌ Заявка отклонена.", reply_markup=kb.admin_menu_keyboard())
+        # Если старое сообщение не найдено, отправляем новое
+        await message.answer("❌ Заявка отклонена.", reply_markup=kb_markup)
 
 
 # --- 3. ГЛАВНОЕ МЕНЮ И ПРОСМОТР АУКЦИОНА ---
@@ -1272,12 +1286,11 @@ async def admin_unban_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# handlers.py
+
 @router.message(StateFilter(AdminActions.waiting_for_ban_id), F.from_user.id.in_(ADMIN_IDS))
 async def admin_ban_handle(message: Message, state: FSMContext, bot: Bot):
-    try:
-        await message.delete()
-    except TelegramAPIError:
-        pass
+    await safe_delete_message(message)
 
     data = await state.get_data()
     menu_message_id = data.get('menu_message_id')
@@ -1291,32 +1304,30 @@ async def admin_ban_handle(message: Message, state: FSMContext, bot: Bot):
                 message_id=menu_message_id,
                 text=f"❌ Пользователь не найден.\n{hbold('Введите ID / @username / телефон:')}",
                 parse_mode="HTML",
-                reply_markup=kb.cancel_fsm_keyboard("admin_menu")
+                reply_markup=kb.admin_cancel_fsm_keyboard() # Клавиатура "Отмена" остается синхронной
             )
-        except TelegramAPIError:
-            pass
+        except TelegramAPIError: pass
         return
 
     await db.update_user_status(target_user_id, 'banned')
     await state.clear()
 
     try:
+        # --- ИСПРАВЛЕНИЕ: Добавлен await ---
+        kb_markup = await kb.admin_menu_keyboard()
+        # ---
         await bot.edit_message_text(
             chat_id=message.chat.id,
             message_id=menu_message_id,
             text=f"✅ Пользователь {target_user_id} забанен.",
-            reply_markup=kb.admin_menu_keyboard()
+            reply_markup=kb_markup # Используем переменную с клавиатурой
         )
-    except TelegramAPIError:
-        pass
+    except TelegramAPIError: pass
 
 
 @router.message(StateFilter(AdminActions.waiting_for_unban_id), F.from_user.id.in_(ADMIN_IDS))
 async def admin_unban_handle(message: Message, state: FSMContext, bot: Bot):
-    try:
-        await message.delete()
-    except TelegramAPIError:
-        pass
+    await safe_delete_message(message)
 
     data = await state.get_data()
     menu_message_id = data.get('menu_message_id')
@@ -1330,24 +1341,25 @@ async def admin_unban_handle(message: Message, state: FSMContext, bot: Bot):
                 message_id=menu_message_id,
                 text=f"❌ Пользователь не найден.\n{hbold('Введите ID / @username / телефон:')}",
                 parse_mode="HTML",
-                reply_markup=kb.cancel_fsm_keyboard("admin_menu")
+                reply_markup=kb.admin_cancel_fsm_keyboard() # Клавиатура "Отмена" остается синхронной
             )
-        except TelegramAPIError:
-            pass
+        except TelegramAPIError: pass
         return
 
     await db.update_user_status(target_user_id, 'approved')
     await state.clear()
 
     try:
+        # --- ИСПРАВЛЕНИЕ: Добавлен await ---
+        kb_markup = await kb.admin_menu_keyboard()
+        # ---
         await bot.edit_message_text(
             chat_id=message.chat.id,
             message_id=menu_message_id,
             text=f"✅ Пользователь {target_user_id} разбанен.",
-            reply_markup=kb.admin_menu_keyboard()
+            reply_markup=kb_markup # Используем переменную с клавиатурой
         )
-    except TelegramAPIError:
-        pass
+    except TelegramAPIError: pass
 
 
 @router.callback_query(F.data == "admin_toggle_auto_approve")
@@ -1384,14 +1396,20 @@ async def bulk_approve_pending(callback: CallbackQuery, bot: Bot):
     user_ids = [user['user_id'] for user in pending_users]
     updated_count = await db.bulk_update_user_status(user_ids, 'approved')
 
-    await callback.answer(f"Одобрено {updated_count} пользователей.", show_alert=True)
+    # Уведомляем пользователей
+    notification_errors = 0
+    for user_id in user_ids:
+        try:
+            # Отправляем стандартное сообщение с главным меню
+            await bot.send_message(user_id, APPROVAL_MESSAGE, reply_markup=kb.get_main_menu())
+        except TelegramAPIError:
+            notification_errors += 1
+            logging.warning(f"Не удалось уведомить пользователя {user_id} при массовом одобрении.")
 
-    # Опционально: уведомить пользователей (может вызвать проблемы с лимитами)
-    # for user_id in user_ids:
-    #     try:
-    #         await bot.send_message(user_id, "Ваша заявка одобрена!", reply_markup=kb.get_main_menu())
-    #     except TelegramAPIError:
-    #         pass
+    alert_text = f"Одобрено {updated_count} пользователей."
+    if notification_errors > 0:
+        alert_text += f" Не удалось уведомить {notification_errors}."
+    await callback.answer(alert_text, show_alert=True)
 
 
 @router.callback_query(F.data == "admin_bulk_decline")
@@ -1407,8 +1425,20 @@ async def bulk_decline_pending(callback: CallbackQuery, bot: Bot):
     user_ids = [user['user_id'] for user in pending_users]
     updated_count = await db.bulk_update_user_status(user_ids, 'banned') # Ставим статус banned
 
-    await callback.answer(f"Отклонено (забанено) {updated_count} пользователей.", show_alert=True)
+    # Уведомляем пользователей
+    notification_errors = 0
+    for user_id in user_ids:
+        try:
+            # Отправляем стандартное сообщение об отклонении
+            await bot.send_message(user_id, REJECTION_MESSAGE)
+        except TelegramAPIError:
+            notification_errors += 1
+            logging.warning(f"Не удалось уведомить пользователя {user_id} при массовом отклонении.")
 
+    alert_text = f"Отклонено (забанено) {updated_count} пользователей."
+    if notification_errors > 0:
+        alert_text += f" Не удалось уведомить {notification_errors}."
+    await callback.answer(alert_text, show_alert=True)
 
 
 
