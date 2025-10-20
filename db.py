@@ -38,6 +38,7 @@ async def init_db():
                                user_id           BIGINT PRIMARY KEY,
                                username          TEXT,
                                full_name         TEXT,
+                               tg_full_name      TEXT, -- Имя из Telegram профиля
                                phone_number      TEXT,
                                status            TEXT        DEFAULT 'pending', -- pending, approved, banned
                                registration_date TIMESTAMPTZ DEFAULT NOW()
@@ -64,6 +65,7 @@ async def init_db():
                            );
                            ''')
         # На случай, если таблица уже существовала раньше — добавим новые столбцы
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tg_full_name TEXT")
         await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS cooldown_minutes INTEGER DEFAULT 10")
         await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS cooldown_off_before_end_minutes INTEGER DEFAULT 30")
 
@@ -99,18 +101,23 @@ async def init_db():
 
 # --- Функции для работы с пользователями (Users) ---
 
-async def add_user_request(user_id: int, username: str, full_name: str, phone_number: str):
-    """Добавляет заявку на регистрацию пользователя в статусе 'pending'."""
+async def add_user_request(user_id: int, username: str, full_name: str, phone_number: str, tg_full_name: str):
+    """
+    Добавляет заявку на регистрацию пользователя в статусе 'pending'.
+    Сохраняет ОБА имени.
+    """
     sql = """
-          INSERT INTO users (user_id, username, full_name, phone_number, status)
-          VALUES ($1, $2, $3, $4, 'pending')
-          ON CONFLICT (user_id) DO UPDATE SET full_name    = EXCLUDED.full_name,
-                                              phone_number = EXCLUDED.phone_number,
-                                              status       = 'pending',
-                                              username     = EXCLUDED.username; \
+          INSERT INTO users (user_id, username, full_name, tg_full_name, phone_number, status)
+          VALUES ($1, $2, $3, $4, $5, 'pending')
+          ON CONFLICT (user_id) DO UPDATE SET
+              full_name    = EXCLUDED.full_name,
+              tg_full_name = EXCLUDED.tg_full_name,
+              phone_number = EXCLUDED.phone_number,
+              status       = 'pending',
+              username     = EXCLUDED.username;
           """
     async with pool.acquire() as conn:
-        await conn.execute(sql, user_id, username, full_name, phone_number)
+        await conn.execute(sql, user_id, username, full_name, tg_full_name, phone_number)
 
 
 async def get_user_status(user_id: int) -> Optional[str]:
@@ -127,11 +134,25 @@ async def update_user_status(user_id: int, status: str):
         logging.info(f"Статус пользователя {user_id} обновлен на {status}.")
 
 
-async def update_user_username(user_id: int, username: str):
-    """Обновляет username пользователя при каждом взаимодействии."""
+async def update_user_tg_details(user_id: int, username: Optional[str], tg_full_name: str):
+    """
+    Обновляет username и tg_full_name пользователя при каждом взаимодействии.
+    Создает запись, если пользователя нет (например, админ).
+    """
+    sql = """
+        INSERT INTO users (user_id, username, tg_full_name, status)
+        VALUES ($1, $2, $3, 'approved') -- Сразу approved, т.к. вызывается при активности
+        ON CONFLICT (user_id) DO UPDATE SET
+            username     = EXCLUDED.username,
+            tg_full_name = EXCLUDED.tg_full_name
+        WHERE users.username IS DISTINCT FROM EXCLUDED.username
+           OR users.tg_full_name IS DISTINCT FROM EXCLUDED.tg_full_name;
+    """
+    # Примечание: Статус 'approved' ставится только при INSERT. Если юзер был 'pending' или 'banned',
+    # его статус НЕ изменится при обновлении username/tg_full_name.
+    # Если нужно создать запись админа, который не регистрировался, он будет создан как 'approved'.
     async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET username = $1 WHERE user_id = $2 AND username IS DISTINCT FROM $1",
-                           username, user_id)
+        await conn.execute(sql, user_id, username, tg_full_name)
 
 
 
@@ -265,9 +286,9 @@ async def add_bid(auction_id: int, user_id: int, amount: float):
 
 
 async def get_last_bid(auction_id: int) -> Optional[Dict[str, Any]]:
-    """Получает последнюю (самую высокую) ставку на аукционе, включая full_name."""
+    """Получает последнюю ставку, включая tg_full_name."""
     sql = """
-          SELECT b.bid_amount, u.username, b.user_id, u.full_name
+          SELECT b.bid_amount, u.username, b.user_id, u.tg_full_name -- Используем tg_full_name
           FROM bids b
           JOIN users u ON b.user_id = u.user_id
           WHERE b.auction_id = $1
@@ -287,61 +308,49 @@ async def get_user_last_bid_time(user_id: int, auction_id: int) -> Optional[str]
 
 
 
-
-# db.py
-
 async def get_top_bids(auction_id: int, limit: int = 5) -> list[dict]:
-    """
-    Возвращает топ-N уникальных пользователей по их самой высокой ставке
-    (по сумме, затем по времени) с данными пользователя.
-    """
+    """Возвращает топ уникальных пользователей по ставке, включая tg_full_name."""
     sql = """
-        SELECT DISTINCT ON (b.user_id) -- Выбираем только одну запись для каждого user_id
-               b.bid_id,
-               b.auction_id,
-               b.user_id,
-               b.bid_amount,
-               b.bid_time,
-               u.username,
-               u.full_name
+        SELECT DISTINCT ON (b.user_id)
+               b.bid_id, b.auction_id, b.user_id, b.bid_amount, b.bid_time,
+               u.username, u.tg_full_name -- Используем tg_full_name
         FROM bids b
         JOIN users u ON b.user_id = u.user_id
         WHERE b.auction_id = $1
-        ORDER BY b.user_id, b.bid_amount DESC, b.bid_time ASC -- Сначала сортируем ставки каждого юзера
-        LIMIT $2; -- Ограничиваем количество *уникальных* юзеров
+        ORDER BY b.user_id, b.bid_amount DESC, b.bid_time ASC
+        LIMIT $2;
     """
-    # Примечание: DISTINCT ON требует, чтобы ORDER BY начинался с колонок DISTINCT ON.
-    # Поэтому сначала сортируем по user_id, а потом уже по ставке/времени внутри группы юзера.
-    # LIMIT применяется *после* DISTINCT ON.
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql, auction_id, limit)
-        # Так как DISTINCT ON уже выбрал самые высокие ставки,
-        # нам нужно просто отсортировать результат по сумме ставки для финального отображения.
-        # Сортируем в Python, так как SQL ORDER BY был нужен для DISTINCT ON.
         sorted_rows = sorted(rows, key=lambda r: r['bid_amount'], reverse=True)
         return [dict(r) for r in sorted_rows]
 
 
 async def get_bid_by_id(bid_id: int) -> dict | None:
-    """Возвращает одну ставку по bid_id."""
-    sql = "SELECT b.*, u.username, u.full_name FROM bids b JOIN users u ON b.user_id = u.user_id WHERE bid_id = $1"
+    """Возвращает ставку по ID, включая tg_full_name."""
+    sql = """
+        SELECT b.*, u.username, u.tg_full_name -- Используем tg_full_name
+        FROM bids b
+        JOIN users u ON b.user_id = u.user_id
+        WHERE bid_id = $1
+        """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(sql, bid_id)
         return dict(row) if row else None
 
 
 async def get_users_with_bid_stats() -> list[dict]:
-    """Возвращает список пользователей с агрегированной статистикой по ставкам."""
-    sql = (
-        "SELECT u.user_id, u.username, u.full_name, u.phone_number, u.status, "
-        "       COALESCE(COUNT(b.bid_id), 0) AS bids_count, "
-        "       COALESCE(SUM(b.bid_amount), 0) AS bids_sum "
-        "FROM users u "
-        "LEFT JOIN bids b ON b.user_id = u.user_id "
-        "GROUP BY u.user_id, u.username, u.full_name, u.phone_number, u.status "
-        "ORDER BY bids_sum DESC, bids_count DESC"
-    )
+    """Возвращает список пользователей со статистикой, включая tg_full_name."""
+    sql = """
+        SELECT u.user_id, u.username, u.full_name, u.tg_full_name, -- Добавлен tg_full_name
+               u.phone_number, u.status,
+               COALESCE(COUNT(b.bid_id), 0) AS bids_count,
+               COALESCE(SUM(b.bid_amount), 0) AS bids_sum
+        FROM users u
+        LEFT JOIN bids b ON b.user_id = u.user_id
+        GROUP BY u.user_id -- Группируем по ID, остальные поля уникальны для ID
+        ORDER BY bids_sum DESC, bids_count DESC
+    """
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql)
         return [dict(r) for r in rows]

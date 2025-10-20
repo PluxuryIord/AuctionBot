@@ -115,7 +115,7 @@ async def user_status_middleware(handler, event, data):
         return # Игнорируем события без пользователя
 
     # Обновляем username (безопасно делать всегда)
-    await db.update_user_username(user.id, user.username)
+    await db.update_user_tg_details(user.id, user.username, user.full_name)
 
     # Админы в ЛС имеют полный доступ (в других чатах их уже отфильтровал restrict_chat_middleware)
     # Кнопки модерации для админа в админ-чате также уже разрешены предыдущим middleware
@@ -205,11 +205,11 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
     if last_bid:
         user_id = last_bid['user_id']
         username = last_bid.get('username')
-        full_name = last_bid.get('full_name') or f"User {user_id}"  # Fallback
+        display_name = last_bid.get('tg_full_name') or f"User {user_id}"
         if username:
             winner_display = f"@{username}"
         else:
-            winner_display = f'<a href="tg://user?id={user_id}">{escape(full_name)}</a>'
+            winner_display = f'<a href="tg://user?id={user_id}">{escape(display_name)}</a>'
     # ---
 
     if finished:
@@ -240,12 +240,12 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
             # --- ФОРМАТИРОВАНИЕ ИМЕНИ В ИСТОРИИ ---
             user_id_hist = b['user_id']
             username_hist = b.get('username')
-            full_name_hist = b.get('full_name') or f"User {user_id_hist}"  # Fallback
+            display_name_hist = b.get('tg_full_name') or f"User {user_id_hist}"  # Fallback
             user_disp = ""
             if username_hist:
                 user_disp = f"@{username_hist}"
             else:
-                user_disp = f'<a href="tg://user?id={user_id_hist}">{escape(full_name_hist)}</a>'
+                user_disp = f'<a href="tg://user?id={user_id_hist}">{escape(display_name_hist)}</a>'
             # ---
             lines.append(f"{i}) {b['bid_amount']:,.0f} ₽ — {user_disp}")
         history = "\n".join(lines)
@@ -480,7 +480,6 @@ async def process_full_name(message: Message, state: FSMContext, bot: Bot):
         state=state,
         prompt=(
             f"Отлично! Теперь {hbold('отправьте ваш номер телефона')} (+7XXXXXXXXXX)\n"
-            "или прикрепите свой контакт (📎 -> Контакт)."  # Убрали упоминание кнопки
         )
     )
     # Reply клавиатуру НЕ отправляем
@@ -492,7 +491,9 @@ async def complete_registration(message: Message, state: FSMContext, bot: Bot, p
 
     data = await state.get_data()
     menu_message_id = data.get('menu_message_id')
-    full_name = data.get('full_name')
+    full_name_reg = data.get('full_name')  # Имя при регистрации
+    # Получаем актуальное имя из Telegram объекта
+    tg_full_name_actual = message.from_user.full_name
 
     # Проверка на дубликат
     existing = await db.get_user_by_phone(phone_number)
@@ -517,7 +518,8 @@ async def complete_registration(message: Message, state: FSMContext, bot: Bot, p
         await db.add_user_request(  # Сначала добавляем или обновляем данные
             user_id=message.from_user.id,
             username=message.from_user.username,
-            full_name=full_name,
+            full_name=full_name_reg,
+            tg_full_name=tg_full_name_actual,
             phone_number=phone_number
         )
         await db.update_user_status(message.from_user.id, 'approved')
@@ -530,7 +532,8 @@ async def complete_registration(message: Message, state: FSMContext, bot: Bot, p
         await db.add_user_request(
             user_id=message.from_user.id,
             username=message.from_user.username,
-            full_name=full_name,
+            full_name=full_name_reg,
+            tg_full_name=tg_full_name_actual,
             phone_number=phone_number
         )
         status_message = "✅ Спасибо! Ваша заявка отправлена на модерацию. Ожидайте подтверждения."
@@ -574,7 +577,8 @@ async def complete_registration(message: Message, state: FSMContext, bot: Bot, p
                 f"Новая заявка на регистрацию:\n\n"
                 f"ID: <code>{user_info.id}</code>\n"
                 f"Пользователь: {user_display}\n"
-                f"ФИО (из заявки): {escape(full_name or '')}\n"
+                f"ФИО (из заявки): {escape(full_name_reg or '')}\n"
+                f"ФИО (ТГ): {escape(tg_full_name_actual or '')}\n"
                 f"Телефон: <code>{escape(phone_number)}</code>",
                 parse_mode="HTML",
                 reply_markup=kb.admin_approval_keyboard(user_info.id)
@@ -969,12 +973,12 @@ async def admin_winner_bid(callback: CallbackQuery, bot: Bot):
     # --- ФОРМАТИРОВАНИЕ ИМЕНИ ПОБЕДИТЕЛЯ ДЛЯ АДМИНА ---
     winner_id = bid['user_id']
     winner_username = bid.get('username')
-    winner_fullname = bid.get('full_name') or f"User {winner_id}"
+    winner_display_name = bid.get('tg_full_name') or f"User {winner_id}"
     winner_display_admin = ""
     if winner_username:
         winner_display_admin = f"@{winner_username}"
     else:
-        winner_display_admin = f'<a href="tg://user?id={winner_id}">{escape(winner_fullname)}</a>'
+        winner_display_admin = f'<a href="tg://user?id={winner_id}">{escape(winner_display_name)}</a>'
     # ---
     kb_markup = await kb.admin_menu_keyboard()
     await callback.message.edit_text(
