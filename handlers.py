@@ -200,7 +200,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
     blitz_price_text = ""
     if auction_data.get('blitz_price'):
         blitz_price_text = f"⚡️ <b>Блиц-цена:</b> {auction_data['blitz_price']:,.2f} руб.\n\n"
-
+    deep_link = f"https://t.me/{bot_info.username}?start=view_auction_{auction_data['auction_id']}"
     text = (
         f"💎 <b>{safe_title}</b>\n\n"
         f"{safe_description}\n\n"
@@ -209,9 +209,53 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
         f"{blitz_price_text}"
         f"⏳ <b>Окончание:</b> {end_time_dt.strftime('%d.%m.%Y в %H:%M')} (МСК)\n"
         f"{history}\n\n"
-        f"Для участия и ставок перейдите в нашего бота: @{bot_info.username}"
+        f"Для участия и ставок перейдите в нашего бота: {deep_link}"
     )
     return text
+
+
+async def show_auction_card_message(message: Message, bot: Bot, auction_data: dict):
+    """Отправляет или редактирует сообщение, показывая карточку аукциона."""
+    text = await format_auction_post(auction_data, bot)
+    kb_markup = kb.get_auction_keyboard(auction_data['auction_id'], auction_data['blitz_price'])
+
+    # Пытаемся отредактировать существующее сообщение (если это был callback)
+    # или отправить новое (если это был /start)
+    try:
+        # Если у message есть photo, редактируем media
+        if message.photo:
+             await bot.edit_message_media(
+                 chat_id=message.chat.id,
+                 message_id=message.message_id,
+                 media=InputMediaPhoto(media=auction_data['photo_id'], caption=text, parse_mode="HTML"),
+                 reply_markup=kb_markup
+             )
+        # Если было текстовое сообщение, пытаемся превратить в фото
+        else:
+             try:
+                 # Сначала удаляем старое текстовое
+                 await message.delete()
+             except TelegramAPIError: pass # Игнорируем, если уже удалено
+             # Отправляем новое с фото
+             await message.answer_photo(
+                 photo=auction_data['photo_id'],
+                 caption=text,
+                 parse_mode="HTML",
+                 reply_markup=kb_markup
+             )
+    except TelegramAPIError as e:
+         # Если редактирование не удалось (например, сообщение слишком старое или /start)
+         logging.warning(f"Failed to edit message to auction card: {e}. Sending new one.")
+         try:
+             await message.delete() # Пытаемся удалить старое, если возможно
+         except TelegramAPIError: pass
+         # Отправляем новое сообщение с фото
+         await message.answer_photo(
+             photo=auction_data['photo_id'],
+             caption=text,
+             parse_mode="HTML",
+             reply_markup=kb_markup
+         )
 
 
 async def find_user_by_text(text: str) -> int | None:
@@ -288,49 +332,71 @@ async def render_registration_card(bot: Bot, chat_id: int, state: FSMContext, pr
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     """
-    Обработчик /start. Проверяет подписку для новых пользователей.
+    Обработчик /start. Проверяет подписку, deep link.
     """
-    await state.clear()  # Сбрасываем состояние в любом случае
+    await state.clear() # Сбрасываем состояние
 
     user_id = message.from_user.id
     user_status = await db.get_user_status(user_id)
-    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/test_auction2"  # Fallback URL
+    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/test_auction2" # Fallback URL
+    deep_link_args = message.text.split() # Получаем аргументы /start
+    payload = deep_link_args[1] if len(deep_link_args) > 1 else None
+
+    # --- ЛОГИКА DEEP LINK ---
+    show_auction_id = None
+    if payload and payload.startswith("view_auction_"):
+        try:
+            show_auction_id = int(payload.split("_")[-1])
+        except (IndexError, ValueError):
+            show_auction_id = None # Неверный формат payload
+    # ---
 
     if int(user_id) in ADMIN_IDS:
+        # Админу сразу показываем меню
         await message.answer("Добро пожаловать в аукцион! (Админ)", reply_markup=kb.get_main_menu_admin())
     elif user_status == 'banned':
         await message.answer("Ваш доступ к боту заблокирован.")
     elif user_status == 'pending':
         await message.answer("Ваша заявка на регистрацию находится на рассмотрении.")
     elif user_status == 'approved':
+        # Одобренный пользователь
         subscribed = await is_user_subscribed(bot, user_id)
         if not subscribed:
             await message.answer(
                 f"Для пользования ботом необходимо быть подписанным на наш канал:\n"
                 f"{channel_url}\n\n"
                 f"Подпишитесь и нажмите ‘Проверить подписку’.",
-                reply_markup=kb.subscribe_keyboard(channel_url)  # auction_id=0
+                reply_markup=kb.subscribe_keyboard(channel_url)
             )
+        elif show_auction_id:
+             # Одобрен, подписан, есть deep link -> Показываем аукцион
+             auction = await db.get_active_auction() # Проверяем, что ID совпадает и аукцион активен
+             if auction and auction['auction_id'] == show_auction_id:
+                 await show_auction_card_message(message, bot, auction)
+             else:
+                 # Аукцион по ID не найден или неактивен
+                 await message.answer("Аукцион, на который вы перешли, уже неактивен.", reply_markup=kb.get_main_menu())
         else:
-            await message.answer("Добро пожаловать в аукцион!", reply_markup=kb.get_main_menu())
+             # Одобрен, подписан, нет deep link -> Главное меню
+             await message.answer("Добро пожаловать в аукцион!", reply_markup=kb.get_main_menu())
     else:
-        # НОВЫЙ ПОЛЬЗОВАТЕЛЬ - сначала проверка подписки
+        # НОВЫЙ ПОЛЬЗОВАТЕЛЬ
         subscribed = await is_user_subscribed(bot, user_id)
         if not subscribed:
             await message.answer(
                 f"Здравствуйте! Для регистрации и участия в аукционе необходимо быть подписанным на наш канал:\n"
                 f"{channel_url}\n\n"
                 f"Подпишитесь и нажмите ‘Проверить подписку’.",
-                reply_markup=kb.subscribe_keyboard(channel_url)  # auction_id=0
+                reply_markup=kb.subscribe_keyboard(channel_url)
             )
         else:
-            # Если уже подписан, начинаем FSM регистрации
+            # Новый, подписан -> Начинаем регистрацию
             await state.set_state(Registration.waiting_for_full_name)
             menu_msg = await message.answer(
                 "Здравствуйте! Вы подписаны на канал, начинаем регистрацию.\n\n"
                 f"{hbold('Введите ваше ФИО:')}",
                 parse_mode="HTML",
-                reply_markup=None  # Без кнопки Отмена
+                reply_markup=None
             )
             await state.update_data(menu_message_id=menu_msg.message_id)
 
@@ -612,37 +678,26 @@ async def decline_reason_process(message: Message, state: FSMContext, bot: Bot):
 async def menu_current(callback: CallbackQuery, bot: Bot):
     auction = await db.get_active_auction()
     if not auction:
-        await bot.edit_message_text(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            text="На данный момент активных аукционов нет.",
-            reply_markup=kb.back_to_menu_keyboard()
-        )
+        # Если нет активных, редактируем сообщение
+        try:
+            await bot.edit_message_text(
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                text="На данный момент активных аукционов нет.",
+                reply_markup=kb.back_to_menu_keyboard()
+            )
+        except TelegramAPIError: # Если не смогли отредактировать (было фото?), удаляем и шлем новое
+            try: await callback.message.delete()
+            except TelegramAPIError: pass
+            await callback.message.answer(
+                 "На данный момент активных аукционов нет.",
+                 reply_markup=kb.back_to_menu_keyboard()
+            )
         await callback.answer()
         return
 
-    text = await format_auction_post(auction, bot)
-
-    try:
-        await bot.edit_message_media(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            media=InputMediaPhoto(media=auction['photo_id'], caption=text, parse_mode="HTML"),
-            reply_markup=kb.get_auction_keyboard(auction['auction_id'], auction['blitz_price'])
-        )
-    except TelegramAPIError as e:
-        logging.warning(f"Failed to edit to media: {e}. Re-sending message.")
-        try:
-            await callback.message.delete()
-        except TelegramAPIError:
-            pass
-
-        await callback.message.answer_photo(
-            photo=auction['photo_id'],
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=kb.get_auction_keyboard(auction['auction_id'], auction['blitz_price'])
-        )
+    # Если аукцион есть, показываем карточку
+    await show_auction_card_message(callback.message, bot, auction)
     await callback.answer()
 
 
@@ -851,7 +906,9 @@ async def admin_winner_bid(callback: CallbackQuery, bot: Bot):
     try:
         await bot.send_message(
             bid['user_id'],
-            f"🎉 Поздравляем! Вы победили в аукционе «{active['title']}». Ваша ставка: {bid['bid_amount']:,.2f} руб."
+            f"🎉 Поздравляем! Вы победили в аукционе «{active['title']}». "
+            f"Ваша ставка: {bid['bid_amount']:,.2f} руб."
+            f"В ближайшее время с вами свяжется администратор для уточнения деталей оплаты и доставки."
         )
     except TelegramAPIError as e:
         logging.warning(f"Не удалось уведомить победителя {bid['user_id']}: {e}")
@@ -866,10 +923,10 @@ async def admin_winner_bid(callback: CallbackQuery, bot: Bot):
     else:
         winner_display_admin = f'<a href="tg://user?id={winner_id}">{escape(winner_fullname)}</a>'
     # ---
-
+    kb_markup = await kb.admin_menu_keyboard()
     await callback.message.edit_text(
         f"Аукцион завершён. Победитель: {winner_display_admin} за {bid['bid_amount']:,.2f} руб.",
-        reply_markup=kb.admin_menu_keyboard(),
+        reply_markup=kb_markup,
         parse_mode="HTML"  # Добавляем parse_mode
     )
     await callback.answer("Аукцион закрыт", show_alert=True)
