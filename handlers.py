@@ -49,60 +49,113 @@ router = Router()
 
 @router.message.middleware()
 @router.callback_query.middleware()
-async def user_status_middleware(handler, event, data):
+async def restrict_chat_middleware(handler, event, data):
     """
-    Middleware: Обновляет username, проверяет бан/pending статус.
-    Пропускает FSM регистрации.
+    Этот middleware выполняется ПЕРЕД user_status_middleware.
+    Он блокирует все события вне ЛС, кроме кнопок модерации в админ-чате для админов.
     """
-    user: User = data.get('event_from_user')
-    if not user:
+    chat = None
+    user = data.get('event_from_user') # Нужен для проверки админа
+
+    if isinstance(event, Message):
+        chat = event.chat
+    elif isinstance(event, CallbackQuery) and event.message:
+        chat = event.message.chat
+    else: # Игнорируем другие типы событий (Poll, ChatMember, etc.)
+        return
+
+    is_private = chat.type == "private"
+    # Сравниваем ID как строки, т.к. из .env читается строка
+    is_admin_chat_event = str(chat.id) == ADMIN_CHAT_ID
+
+    # 1. Разрешаем все в приватных чатах
+    if is_private:
         return await handler(event, data)
 
-    # Админы имеют полный доступ всегда
+    # 2. Обрабатываем события НЕ в приватных чатах
+    if is_admin_chat_event and isinstance(event, CallbackQuery):
+        # Проверяем, что это колбэк одобрения/отклонения
+        is_approval_callback = event.data and (
+            event.data.startswith("approve_user_") or event.data.startswith("decline_user_")
+        )
+        if is_approval_callback:
+            # Проверяем, что нажал админ
+            if user and int(user.id) in ADMIN_IDS:
+                return await handler(event, data) # Разрешаем админу модерировать
+            else:
+                # Если нажал не админ (или user не определен)
+                try:
+                    await event.answer("Это действие доступно только администраторам.", show_alert=True)
+                except TelegramAPIError: pass
+                return # Блокируем
+
+    # 3. Блокируем все остальные события в не-приватных чатах
+    if isinstance(event, CallbackQuery):
+        # Отвечаем на "левые" нажатия кнопок в группах
+        try:
+            # Не показываем алерт, чтобы не спамить, если бот случайно в группе
+            await event.answer("Эта функция доступна только в ЛС с ботом.")
+        except TelegramAPIError: pass
+    # Сообщения в группах просто игнорируем (return без await handler)
+    return # Блокируем
+
+
+@router.message.middleware()
+@router.callback_query.middleware()
+async def user_status_middleware(handler, event, data):
+    """
+    Этот middleware выполняется ПОСЛЕ restrict_chat_middleware.
+    Обновляет username, проверяет бан/pending/None статус (только для ЛС).
+    """
+    user: User = data.get('event_from_user')
+    # Проверка user обязательна, т.к. restrict_chat_middleware мог пропустить событие без user
+    if not user:
+        # Можно добавить логгирование, если нужно отлаживать события без пользователя
+        # logging.warning("user_status_middleware: User not found in event.")
+        return # Игнорируем события без пользователя
+
+    # Обновляем username (безопасно делать всегда)
+    await db.update_user_username(user.id, user.username)
+
+    # Админы в ЛС имеют полный доступ (в других чатах их уже отфильтровал restrict_chat_middleware)
+    # Кнопки модерации для админа в админ-чате также уже разрешены предыдущим middleware
     if int(user.id) in ADMIN_IDS:
         return await handler(event, data)
 
-    # Обновляем username при каждом взаимодействии
-    await db.update_user_username(user.id, user.username)
-
-    # Пропускаем /start всегда
+    # Пропускаем /start всегда (он теперь работает только в ЛС)
     if isinstance(event, Message) and event.text == "/start":
         return await handler(event, data)
 
-    # Пропускаем хэндлеры проверки подписки
+    # Пропускаем хэндлеры проверки подписки (они теперь работают только в ЛС)
     if isinstance(event, CallbackQuery) and event.data.startswith("check_sub"):
         return await handler(event, data)
 
-    # --- ИСПРАВЛЕНИЕ: Разрешаем FSM РЕГИСТРАЦИИ ---
+    # Разрешаем FSM РЕГИСТРАЦИИ (он теперь работает только в ЛС)
     state: FSMContext = data.get('state')
     current_state = await state.get_state()
     if current_state and current_state.startswith("Registration:"):
-        return await handler(event, data)  # Пропускаем регистрацию
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+         return await handler(event, data)
 
+    # Проверка статусов для обычных пользователей (только в ЛС)
     status = await db.get_user_status(user.id)
-
-    # Проверка статусов (бан, ожидание) - проверка на None УБРАНА
     block_reason = None
     if status == 'banned':
         block_reason = "Ваш доступ к боту заблокирован."
     elif status == 'pending':
         block_reason = "Ваша заявка на регистрацию находится на рассмотрении."
-    # elif status is None: # ЭТО УСЛОВИЕ УБРАНО
+    elif status is None:
+        # Эта проверка нужна, т.к. пользователь мог как-то обойти /start
+        block_reason = "Вы не зарегистрированы. Пожалуйста, нажмите /start для начала работы."
 
     if block_reason:
         if isinstance(event, Message):
-            # Если FSM активен (не регистрация), пытаемся удалить сообщение
-            if current_state is not None:  # Проверяем, что состояние вообще есть
-                await safe_delete_message(event)
+            if current_state is not None: await safe_delete_message(event)
             await event.answer(block_reason)
         elif isinstance(event, CallbackQuery):
             await event.answer(block_reason, show_alert=True)
-        return  # Прерываем дальнейшую обработку
+        return # Прерываем
 
-    # Если статус 'approved' или None (и не FSM регистрации), пропускаем дальше
-    # Проверка подписки для 'approved' теперь делается только при /start
-    # или при попытке сделать ставку/участвовать.
+    # Если статус 'approved' (и мы в ЛС), пропускаем дальше
     return await handler(event, data)
 
 
