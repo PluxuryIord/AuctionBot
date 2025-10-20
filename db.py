@@ -288,17 +288,39 @@ async def get_user_last_bid_time(user_id: int, auction_id: int) -> Optional[str]
 
 
 
+# db.py
+
 async def get_top_bids(auction_id: int, limit: int = 5) -> list[dict]:
-    """Возвращает топ-N ставок (по сумме, затем по времени) с данными пользователя."""
-    sql = (
-        "SELECT b.bid_id, b.auction_id, b.user_id, b.bid_amount, b.bid_time, u.username, u.full_name "
-        "FROM bids b JOIN users u ON b.user_id = u.user_id "
-        "WHERE b.auction_id = $1 "
-        "ORDER BY b.bid_amount DESC, b.bid_time ASC LIMIT $2"
-    )
+    """
+    Возвращает топ-N уникальных пользователей по их самой высокой ставке
+    (по сумме, затем по времени) с данными пользователя.
+    """
+    sql = """
+        SELECT DISTINCT ON (b.user_id) -- Выбираем только одну запись для каждого user_id
+               b.bid_id,
+               b.auction_id,
+               b.user_id,
+               b.bid_amount,
+               b.bid_time,
+               u.username,
+               u.full_name
+        FROM bids b
+        JOIN users u ON b.user_id = u.user_id
+        WHERE b.auction_id = $1
+        ORDER BY b.user_id, b.bid_amount DESC, b.bid_time ASC -- Сначала сортируем ставки каждого юзера
+        LIMIT $2; -- Ограничиваем количество *уникальных* юзеров
+    """
+    # Примечание: DISTINCT ON требует, чтобы ORDER BY начинался с колонок DISTINCT ON.
+    # Поэтому сначала сортируем по user_id, а потом уже по ставке/времени внутри группы юзера.
+    # LIMIT применяется *после* DISTINCT ON.
+
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql, auction_id, limit)
-        return [dict(r) for r in rows]
+        # Так как DISTINCT ON уже выбрал самые высокие ставки,
+        # нам нужно просто отсортировать результат по сумме ставки для финального отображения.
+        # Сортируем в Python, так как SQL ORDER BY был нужен для DISTINCT ON.
+        sorted_rows = sorted(rows, key=lambda r: r['bid_amount'], reverse=True)
+        return [dict(r) for r in sorted_rows]
 
 
 async def get_bid_by_id(bid_id: int) -> dict | None:

@@ -703,16 +703,16 @@ async def noop_callback(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "menu_contact")
-async def menu_contact(callback: CallbackQuery):
-    admin_username = "CoId_Siemens"  # TODO: Вынести в .env
-    await callback.bot.edit_message_text(
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-        text=f"По всем вопросам вы можете написать нашему администратору: @{admin_username}",
-        reply_markup=kb.back_to_menu_keyboard()
-    )
-    await callback.answer()
+# @router.callback_query(F.data == "menu_contact")
+# async def menu_contact(callback: CallbackQuery):
+#     admin_username = "CoId_Siemens"  # TODO: Вынести в .env
+#     await callback.bot.edit_message_text(
+#         chat_id=callback.message.chat.id,
+#         message_id=callback.message.message_id,
+#         text=f"По всем вопросам вы можете написать нашему администратору: @{admin_username}",
+#         reply_markup=kb.back_to_menu_keyboard()
+#     )
+#     await callback.answer()
 
 
 @router.callback_query(F.data == "back_to_menu")
@@ -1905,15 +1905,32 @@ async def admin_export_users(callback: CallbackQuery, bot: Bot):
             document=buf,
             caption="Экспорт пользователей (CSV)"
         )
+
+        # 4. Редактируем исходное меню, возвращая админ-панель
+        # --- ИСПРАВЛЕНИЕ: Добавлен await ---
+        kb_markup_success = await kb.admin_menu_keyboard()
+        # ---
         await callback.message.edit_text(
             "✅ Экспорт успешно отправлен.\n\nАдмин-панель:",
-            reply_markup=kb.admin_menu_keyboard()
+            reply_markup=kb_markup_success  # Используем переменную
         )
+
     except TelegramAPIError as e:
-        await callback.message.edit_text(
-            f"❌ Ошибка при отправке файла: {e}",
-            reply_markup=kb.admin_menu_keyboard()
-        )
+        # Если не смогли отправить файл или отредактировать сообщение
+        logging.error(f"Ошибка при экспорте пользователей: {e}")
+        # --- ИСПРАВЛЕНИЕ: Добавлен await ---
+        kb_markup_error = await kb.admin_menu_keyboard()
+        # ---
+        try:
+            # Пытаемся вернуть админ-меню даже при ошибке
+            await callback.message.edit_text(
+                f"❌ Ошибка при отправке файла: {e}",
+                reply_markup=kb_markup_error  # Используем переменную
+            )
+        except TelegramAPIError:
+            # Если и это не сработало, просто ничего не делаем
+            pass
+
     await callback.answer()
 
 

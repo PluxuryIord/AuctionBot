@@ -8,12 +8,17 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder  # Используем
 
 
 def get_main_menu():
-    buttons = [
-        [InlineKeyboardButton(text="💎 Актуальный аукцион", callback_data="menu_current")],
-        [InlineKeyboardButton(text="📚 Все аукционы", callback_data="menu_all"),
-         InlineKeyboardButton(text="📞 Связь с администратором", callback_data="menu_contact")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    # Задаем username администратора прямо здесь
+    # TODO: Вынести admin_username в .env файл для лучшей конфигурации
+    admin_username = "CoId_Siemens"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="💎 Актуальный аукцион", callback_data="menu_current"))
+    builder.row(InlineKeyboardButton(text="📚 Все аукционы", callback_data="menu_all")) # Отдельный ряд
+    # Кнопка как ссылка
+    builder.row(InlineKeyboardButton(text="📞 Связь с администратором", url=f"https://t.me/{admin_username}")) # Отдельный ряд и URL
+
+    return builder.as_markup()
 
 
 def get_auction_keyboard(auction_id, blitz_price=None):
@@ -55,13 +60,18 @@ def cancel_fsm_keyboard(cancel_callback_data: str = "back_to_menu"):
 
 
 def get_main_menu_admin():
-    buttons = [
-        [InlineKeyboardButton(text="💎 Актуальный аукцион", callback_data="menu_current")],
-        [InlineKeyboardButton(text="📚 Все аукционы", callback_data="menu_all"),
-         InlineKeyboardButton(text="📞 Связь с администратором", callback_data="menu_contact")],
-        [InlineKeyboardButton(text="⚙️ Админ", callback_data="admin_menu")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    # Задаем username администратора прямо здесь
+    # TODO: Вынести admin_username в .env файл
+    admin_username = "CoId_Siemens"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="💎 Актуальный аукцион", callback_data="menu_current"))
+    builder.row(InlineKeyboardButton(text="📚 Все аукционы", callback_data="menu_all")) # Отдельный ряд
+    # Кнопка как ссылка
+    builder.row(InlineKeyboardButton(text="📞 Связь с администратором", url=f"https://t.me/{admin_username}")) # Отдельный ряд и URL
+    builder.row(InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_menu")) # Отдельный ряд
+
+    return builder.as_markup()
 
 
 async def admin_menu_keyboard() -> InlineKeyboardMarkup:
