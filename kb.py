@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder  # Используем
 def get_main_menu():
     # Задаем username администратора прямо здесь
     # TODO: Вынести admin_username в .env файл для лучшей конфигурации
-    admin_username = "CoId_Siemens"
+    admin_username = "@AvroraDiamonds"
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="💎 Актуальный аукцион", callback_data="menu_current"))
@@ -62,7 +62,7 @@ def cancel_fsm_keyboard(cancel_callback_data: str = "back_to_menu"):
 def get_main_menu_admin():
     # Задаем username администратора прямо здесь
     # TODO: Вынести admin_username в .env файл
-    admin_username = "CoId_Siemens"
+    admin_username = "@AvroraDiamonds"
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="💎 Актуальный аукцион", callback_data="menu_current"))
