@@ -391,7 +391,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
 
     user_id = message.from_user.id
     user_status = await db.get_user_status(user_id)
-    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/test_auction2" # Fallback URL
+    channel_url = f"https://t.me/{CHANNEL_USERNAME}" # Fallback URL
     deep_link_args = message.text.split() # Получаем аргументы /start
     payload = deep_link_args[1] if len(deep_link_args) > 1 else None
 
