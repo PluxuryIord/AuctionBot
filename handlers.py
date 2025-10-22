@@ -1168,9 +1168,11 @@ async def check_subscription_auction(callback: CallbackQuery, bot: Bot, state: F
 
 
 @router.callback_query(F.data.startswith("blitz_auction_"))
-async def blitz_buy(callback: CallbackQuery, bot: Bot, state: FSMContext):
-    """Покупка по блиц-цене."""
-    await state.clear()  # На случай, если пользователь был в FSM ставки
+async def blitz_buy_confirm_request(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    """
+    Запрос подтверждения блиц-покупки (вместо мгновенной покупки).
+    """
+    await state.clear()  # Сбрасываем FSM ставки, если пользователь был в нем
 
     auction_id = int(callback.data.split("_")[2])
     auction = await db.get_active_auction()
@@ -1184,10 +1186,49 @@ async def blitz_buy(callback: CallbackQuery, bot: Bot, state: FSMContext):
         await callback.answer("Блиц-цена недоступна для этого лота.", show_alert=True)
         return
 
+    # Редактируем сообщение, запрашивая подтверждение
+    try:
+        await bot.edit_message_caption(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            caption=(
+                f"⚡️ <b>Подтверждение блиц-покупки</b> ⚡️\n\n"
+                f"Вы уверены, что хотите купить лот «{escape(auction['title'])}» "
+                f"за {blitz_price:,.2f} руб.?"
+            ),
+            parse_mode="HTML",
+            reply_markup=kb.confirm_blitz_keyboard(auction_id)  # Используем новую клавиатуру
+        )
+    except TelegramAPIError:
+        pass  # Если не удалось отредактировать
+    await callback.answer()
+
+
+# 2. ДОБАВЬТЕ ЭТОТ НОВЫЙ ОБРАБОТЧИК (после функции выше)
+@router.callback_query(F.data.startswith("confirm_blitz_"))
+async def blitz_buy_execute(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    """
+    Выполнение блиц-покупки (после подтверждения).
+    Содержит логику из старого хэндлера blitz_buy (Source 186-191).
+    """
+    auction_id = int(callback.data.split("_")[2])
+    auction = await db.get_active_auction()
+
+    if not auction or auction['auction_id'] != auction_id:
+        await callback.answer("Аукцион уже завершен или неактивен.", show_alert=True)
+        return
+
+    blitz_price = auction.get('blitz_price')
+    if not blitz_price:
+        await callback.answer("Блиц-цена недоступна.", show_alert=True)
+        return
+
+    # --- ВЫПОЛНЯЕМ ПОКУПКУ ---
     await db.add_bid(auction_id, callback.from_user.id, blitz_price)
     await db.finish_auction(auction_id, callback.from_user.id, blitz_price)
     finished_post_text = await format_auction_post(auction, bot, finished=True)
 
+    # [cite_start]Обновляем пост в канале [cite: 187-188]
     try:
         await bot.edit_message_caption(
             chat_id=CHANNEL_ID,
@@ -1199,25 +1240,28 @@ async def blitz_buy(callback: CallbackQuery, bot: Bot, state: FSMContext):
     except TelegramAPIError as e:
         logging.warning(f"Не удалось обновить пост в канале после блиц-покупки: {e}")
 
+    # [cite_start]Обновляем приватную карточку [cite: 189]
     try:
         await callback.bot.edit_message_caption(
             chat_id=callback.message.chat.id,
             message_id=callback.message.message_id,
             caption=finished_post_text,
             parse_mode="HTML",
-            reply_markup=kb.back_to_menu_keyboard()  # Заменено None на кнопку "Назад"
+            reply_markup=kb.back_to_menu_keyboard()
         )
     except TelegramAPIError as e:
         logging.warning(f"Не удалось обновить приватную карточку после блиц-покупки: {e}")
 
+    # [cite_start]Отправляем уведомление [cite: 190-191]
     try:
         await bot.send_message(
             callback.from_user.id,
-            f"🎉 Поздравляем! Вы купили лот «{(auction['title'])}» по блиц-цене {blitz_price:,.2f} руб.\n\n"
+            f"🎉 Поздравляем! Вы купили лот «{escape(auction['title'])}» по блиц-цене {blitz_price:,.2f} руб.\n\n"
             f"В ближайшее время с вами свяжется администратор."
         )
     except TelegramAPIError:
         pass
+
     await callback.answer("Покупка по блиц-цене оформлена!", show_alert=True)
 
 

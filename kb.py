@@ -31,6 +31,17 @@ def get_auction_keyboard(auction_id, blitz_price=None):
     return builder.as_markup()
 
 
+def confirm_blitz_keyboard(auction_id: int) -> InlineKeyboardMarkup:
+    """
+    Клавиатура для подтверждения блиц-покупки.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="✅ Да, купить", callback_data=f"confirm_blitz_{auction_id}"))
+    # Эта кнопка отмены вернет пользователя на карточку аукциона
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data=f"show_auction_{auction_id}"))
+    return builder.as_markup()
+
+
 def admin_approval_keyboard(user_id):
     buttons = [
         [
