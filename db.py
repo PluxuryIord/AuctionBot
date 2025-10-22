@@ -134,23 +134,21 @@ async def update_user_status(user_id: int, status: str):
         logging.info(f"Статус пользователя {user_id} обновлен на {status}.")
 
 
+# db.py
+
 async def update_user_tg_details(user_id: int, username: Optional[str], tg_full_name: str):
     """
     Обновляет username и tg_full_name пользователя при каждом взаимодействии.
-    Создает запись, если пользователя нет (например, админ).
+    НЕ СОЗДАЕТ нового пользователя, если его нет.
     """
     sql = """
-        INSERT INTO users (user_id, username, tg_full_name, status)
-        VALUES ($1, $2, $3, 'approved') -- Сразу approved, т.к. вызывается при активности
-        ON CONFLICT (user_id) DO UPDATE SET
-            username     = EXCLUDED.username,
-            tg_full_name = EXCLUDED.tg_full_name
-        WHERE users.username IS DISTINCT FROM EXCLUDED.username
-           OR users.tg_full_name IS DISTINCT FROM EXCLUDED.tg_full_name;
+        UPDATE users SET
+            username     = $2,
+            tg_full_name = $3
+        WHERE user_id = $1
+          AND (users.username IS DISTINCT FROM $2
+           OR users.tg_full_name IS DISTINCT FROM $3);
     """
-    # Примечание: Статус 'approved' ставится только при INSERT. Если юзер был 'pending' или 'banned',
-    # его статус НЕ изменится при обновлении username/tg_full_name.
-    # Если нужно создать запись админа, который не регистрировался, он будет создан как 'approved'.
     async with pool.acquire() as conn:
         await conn.execute(sql, user_id, username, tg_full_name)
 

@@ -8,5 +8,12 @@
       <jdbc-url>jdbc:postgresql://815be3a8cf75f455757d40e5.twc1.net:5432/default_db</jdbc-url>
       <working-dir>$ProjectFileDir$</working-dir>
     </data-source>
+    <data-source source="LOCAL" name="default_db@02f8f74fa4feddaf3448776f.twc1.net" uuid="7ea27716-8339-43d4-83b2-88c1e14091e1">
+      <driver-ref>postgresql</driver-ref>
+      <synchronize>true</synchronize>
+      <jdbc-driver>org.postgresql.Driver</jdbc-driver>
+      <jdbc-url>jdbc:postgresql://02f8f74fa4feddaf3448776f.twc1.net:5432/default_db</jdbc-url>
+      <working-dir>$ProjectFileDir$</working-dir>
+    </data-source>
   </component>
 </project>
