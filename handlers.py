@@ -267,6 +267,56 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
     return text
 
 
+async def _execute_blitz_purchase(bot: Bot, auction: dict, user_id: int, chat_id: int, message_id_to_edit: int):
+    """
+    Вспомогательная функция для выполнения блиц-покупки.
+    Завершает аукцион, обновляет посты и уведомляет победителя.
+    """
+    auction_id = auction['auction_id']
+    blitz_price = auction['blitz_price']
+
+    # 1. Добавляем "победную" ставку и завершаем аукцион
+    await db.add_bid(auction_id, user_id, blitz_price)
+    await db.finish_auction(auction_id, user_id, blitz_price)
+
+    # 2. Форматируем финальный пост
+    finished_post_text = await format_auction_post(auction, bot, finished=True)
+
+    # 3. Обновляем пост в канале [cite: 187-188]
+    try:
+        await bot.edit_message_caption(
+            chat_id=CHANNEL_ID,
+            message_id=auction['channel_message_id'],
+            caption=finished_post_text,
+            parse_mode="HTML",
+            reply_markup=None
+        )
+    except TelegramAPIError as e:
+        logging.warning(f"Не удалось обновить пост в канале после блиц-покупки: {e}")
+
+    # 4. Обновляем приватную карточку пользователя
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=message_id_to_edit,
+            caption=finished_post_text,
+            parse_mode="HTML",
+            reply_markup=kb.back_to_menu_keyboard()
+        )
+    except TelegramAPIError as e:
+        logging.warning(f"Не удалось обновить приватную карточку после блиц-покупки: {e}")
+
+    # 5. Уведомляем победителя [cite: 190-191]
+    try:
+        await bot.send_message(
+            user_id,
+            f"🎉 Поздравляем! Вы купили лот «{escape(auction['title'])}» по блиц-цене {blitz_price:,.2f} руб.\n\n"
+            f"В ближайшее время с вами свяжется администратор."
+        )
+    except TelegramAPIError:
+        pass
+
+
 async def show_auction_card_message(message: Message, bot: Bot, auction_data: dict):
     """Отправляет или редактирует сообщение, показывая карточку аукциона."""
     text = await format_auction_post(auction_data, bot)
@@ -928,7 +978,7 @@ async def admin_winner_none(callback: CallbackQuery, bot: Bot):
         )
     except TelegramAPIError as e:
         logging.error(f"Не удалось обновить пост в канале после завершения без победителя: {e}")
-    await callback.message.edit_text("Аукцион завершён без победителя.", reply_markup=kb.admin_menu_keyboard())
+    await callback.message.edit_text("Аукцион завершён без победителя.", reply_markup=await kb.admin_menu_keyboard())
     await callback.answer("Аукцион закрыт", show_alert=True)
 
 
@@ -1208,8 +1258,7 @@ async def blitz_buy_confirm_request(callback: CallbackQuery, bot: Bot, state: FS
 @router.callback_query(F.data.startswith("confirm_blitz_"))
 async def blitz_buy_execute(callback: CallbackQuery, bot: Bot, state: FSMContext):
     """
-    Выполнение блиц-покупки (после подтверждения).
-    Содержит логику из старого хэндлера blitz_buy (Source 186-191).
+    Выполнение блиц-покупки (после подтверждения кнопкой "Да, купить").
     """
     auction_id = int(callback.data.split("_")[2])
     auction = await db.get_active_auction()
@@ -1218,59 +1267,28 @@ async def blitz_buy_execute(callback: CallbackQuery, bot: Bot, state: FSMContext
         await callback.answer("Аукцион уже завершен или неактивен.", show_alert=True)
         return
 
-    blitz_price = auction.get('blitz_price')
-    if not blitz_price:
+    if not auction.get('blitz_price'):
         await callback.answer("Блиц-цена недоступна.", show_alert=True)
         return
 
-    # --- ВЫПОЛНЯЕМ ПОКУПКУ ---
-    await db.add_bid(auction_id, callback.from_user.id, blitz_price)
-    await db.finish_auction(auction_id, callback.from_user.id, blitz_price)
-    finished_post_text = await format_auction_post(auction, bot, finished=True)
-
-    # [cite_start]Обновляем пост в канале [cite: 187-188]
-    try:
-        await bot.edit_message_caption(
-            chat_id=CHANNEL_ID,
-            message_id=auction['channel_message_id'],
-            caption=finished_post_text,
-            parse_mode="HTML",
-            reply_markup=None
-        )
-    except TelegramAPIError as e:
-        logging.warning(f"Не удалось обновить пост в канале после блиц-покупки: {e}")
-
-    # [cite_start]Обновляем приватную карточку [cite: 189]
-    try:
-        await callback.bot.edit_message_caption(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            caption=finished_post_text,
-            parse_mode="HTML",
-            reply_markup=kb.back_to_menu_keyboard()
-        )
-    except TelegramAPIError as e:
-        logging.warning(f"Не удалось обновить приватную карточку после блиц-покупки: {e}")
-
-    # [cite_start]Отправляем уведомление [cite: 190-191]
-    try:
-        await bot.send_message(
-            callback.from_user.id,
-            f"🎉 Поздравляем! Вы купили лот «{escape(auction['title'])}» по блиц-цене {blitz_price:,.2f} руб.\n\n"
-            f"В ближайшее время с вами свяжется администратор."
-        )
-    except TelegramAPIError:
-        pass
+    # Вызываем нашу новую общую функцию
+    await _execute_blitz_purchase(
+        bot=bot,
+        auction=auction,
+        user_id=callback.from_user.id,
+        chat_id=callback.message.chat.id,
+        message_id_to_edit=callback.message.message_id
+    )
 
     await callback.answer("Покупка по блиц-цене оформлена!", show_alert=True)
 
 
 @router.message(StateFilter(Bidding.waiting_for_bid_amount), F.text)
 async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
-    """Обработка введенной суммы ставки (ИНЛАЙН FSM)."""
+    """Обработка введенной суммы ставки (с проверкой на блиц-цену)."""
 
     try:
-        await message.delete()  # 1. Удаляем сообщение пользователя
+        await message.delete()  # 1. Удаляем сообщение пользователя [cite: 192]
     except TelegramAPIError:
         pass
 
@@ -1296,9 +1314,9 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
     # Проверка формата
     try:
         bid_amount = parse_amount(message.text)
-        if bid_amount <= 0: raise ValueError
+        if bid_amount <= 0: raise ValueError("Bid must be positive")
     except ValueError:
-        # Пере-редактируем меню с ошибкой
+        # (Логика отображения ошибки... [cite: 195-196])
         last_bid = await db.get_last_bid(auction_id)
         current_price = last_bid['bid_amount'] if last_bid else auction['start_price']
         try:
@@ -1317,26 +1335,28 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
             pass
         return
 
+    # --- НОВАЯ ПРОВЕРКА НА БЛИЦ-ЦЕНУ ---
+    blitz_price = auction.get('blitz_price')
+    if blitz_price and bid_amount >= blitz_price:
+        logging.info(f"Пользователь {message.from_user.id} активировал блиц-цену ставкой {bid_amount}")
+        await state.clear()
+
+        # Вызываем нашу новую общую функцию
+        await _execute_blitz_purchase(
+            bot=bot,
+            auction=auction,
+            user_id=message.from_user.id,
+            chat_id=message.chat.id,
+            message_id_to_edit=menu_message_id
+        )
+        # Завершаем выполнение функци
+        return
+    # --- КОНЕЦ НОВОЙ ПРОВЕРКИ ---
+
     last_bid = await db.get_last_bid(auction['auction_id'])
     current_price = last_bid['bid_amount'] if last_bid else auction['start_price']
 
-    # Блиц-покупка
-    blitz_price = auction.get('blitz_price')
-    if blitz_price and bid_amount >= blitz_price:
-        await state.clear()  # Выходим из FSM
-        # Имитируем нажатие кнопки, чтобы не дублировать код
-        fake_callback_query = types.CallbackQuery(
-            id="fake_blitz",
-            from_user=message.from_user,
-            chat_instance="fake",
-            message=types.Message(message_id=menu_message_id, chat=message.chat, date=datetime.now()),
-            data=f"blitz_auction_{auction_id}"
-        )
-        # У `blitz_buy` свой `await state.clear()`, так что это безопасно
-        await blitz_buy(fake_callback_query, bot, state)
-        return
-
-    # Проверка минимальной ставки
+    # Проверка минимальной ставки [cite: 199-202]
     if bid_amount < current_price + auction['min_step']:
         try:
             min_bid_value = current_price + auction['min_step']
@@ -1356,32 +1376,31 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
             pass
         return
 
-    # --- Ставка принята ---
-    await state.clear()  # 2. Выходим из FSM
-
+    # --- Ставка принята (логика без изменений) ---
+    await state.clear()
     previous_leader = last_bid['user_id'] if last_bid else None
     await db.add_bid(auction['auction_id'], message.from_user.id, bid_amount)
 
-    # 3. Антиснайпинг
+    # Антиснайпинг [cite: 203]
     try:
         end_dt = auction['end_time']
         now_dt = datetime.now(end_dt.tzinfo)
         if (end_dt - now_dt) <= timedelta(minutes=2):
             new_end = end_dt + timedelta(minutes=2)
             await db.update_auction_end_time(auction['auction_id'], new_end)
-            auction = await db.get_active_auction()  # Обновляем данные
+            auction = await db.get_active_auction()
     except Exception as e:
         logging.warning(f"Антиснайпинг не сработал: {e}")
 
-    # 4. Уведомляем предыдущего лидера
+    # Уведомляем предыдущего лидера [cite: 204-205]
     if previous_leader and previous_leader != message.from_user.id:
         try:
             await bot.send_message(previous_leader,
-                                   f"❗️ Вашу ставку на аукционе '{auction['title']}' перебили! Новая ставка: {bid_amount:,.0f} руб.")
+                                   f"❗️ Вашу ставку на аукционе '{escape(auction['title'])}' перебили! Новая ставка: {bid_amount:,.0f} руб.")
         except TelegramAPIError as e:
             logging.warning(f"Не удалось уведомить пользователя {previous_leader}: {e}")
 
-    # 5. Обновляем главный пост в канале
+    # Обновляем главный пост в канале [cite: 206]
     new_text_channel = await format_auction_post(auction, bot)
     try:
         await bot.edit_message_caption(
@@ -1393,8 +1412,7 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
     except TelegramAPIError as e:
         logging.error(f"Не удалось обновить пост в канале {CHANNEL_ID}: {e}")
 
-    # 6. Обновляем приватную карточку (бывшее FSM-меню)
-    # Добавляем плашку об успехе
+    # Обновляем приватную карточку [cite: 207]
     new_text_private = f"✅ Ваша ставка: {bid_amount:,.0f} руб.\n\n" + new_text_channel
     try:
         await bot.edit_message_caption(
@@ -1670,7 +1688,7 @@ async def render_auction_creation_card(
         logging.error(f"Failed to render creation card: {e}. State: {await state.get_state()} Data: {data}")
         if "message to edit not found" in str(e) or "message to delete not found" in str(e):
             await state.clear()
-            await bot.send_message(chat_id, "Произошла ошибка, FSM сброшен.", reply_markup=kb.admin_menu_keyboard())
+            await bot.send_message(chat_id, "Произошла ошибка, FSM сброшен.", reply_markup=await kb.admin_menu_keyboard())
 
 
 async def return_to_confirmation(bot: Bot, chat_id: int, state: FSMContext):
@@ -1962,7 +1980,7 @@ async def confirm_auction_post(callback: CallbackQuery, state: FSMContext, bot: 
         await bot.send_message(
             chat_id=callback.message.chat.id,
             text=f"✅ Аукцион «{data['title']}» успешно создан.",
-            reply_markup=kb.admin_menu_keyboard()
+            reply_markup=await kb.admin_menu_keyboard()
         )
     except Exception as e:
         logging.error(f"Ошибка создания аукциона: {e}")
@@ -1973,7 +1991,7 @@ async def confirm_auction_post(callback: CallbackQuery, state: FSMContext, bot: 
         await bot.send_message(
             chat_id=callback.message.chat.id,
             text=f"❌ Ошибка при публикации: {e}",
-            reply_markup=kb.admin_menu_keyboard()
+            reply_markup=await kb.admin_menu_keyboard()
         )
     finally:
         await state.clear()
