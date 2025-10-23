@@ -307,21 +307,20 @@ async def get_user_last_bid_time(user_id: int, auction_id: int) -> Optional[str]
 
 
 async def get_top_bids(auction_id: int, limit: int = 5) -> list[dict]:
-    """Возвращает топ уникальных пользователей по ставке, включая tg_full_name."""
+    """Возвращает топ ставок (неуникальных), включая tg_full_name."""
     sql = """
-        SELECT DISTINCT ON (b.user_id)
-               b.bid_id, b.auction_id, b.user_id, b.bid_amount, b.bid_time,
+        SELECT b.bid_id, b.auction_id, b.user_id, b.bid_amount, b.bid_time,
                u.username, u.tg_full_name -- Используем tg_full_name
         FROM bids b
         JOIN users u ON b.user_id = u.user_id
         WHERE b.auction_id = $1
-        ORDER BY b.user_id, b.bid_amount DESC, b.bid_time ASC
+        ORDER BY b.bid_amount DESC, b.bid_time ASC -- Сортируем по сумме ставки (убыв.)
         LIMIT $2;
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql, auction_id, limit)
-        sorted_rows = sorted(rows, key=lambda r: r['bid_amount'], reverse=True)
-        return [dict(r) for r in sorted_rows]
+        # Убираем 'sorted_rows', так как SQL теперь сортирует правильно
+        return [dict(r) for r in rows]
 
 
 async def get_bid_by_id(bid_id: int) -> dict | None:
