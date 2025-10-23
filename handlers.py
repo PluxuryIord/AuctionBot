@@ -320,7 +320,11 @@ async def _execute_blitz_purchase(bot: Bot, auction: dict, user_id: int, chat_id
 async def show_auction_card_message(message: Message, bot: Bot, auction_data: dict):
     """Отправляет или редактирует сообщение, показывая карточку аукциона."""
     text = await format_auction_post(auction_data, bot)
-    kb_markup = kb.get_auction_keyboard(auction_data['auction_id'], auction_data['blitz_price'])
+    is_admin = int(message.chat.id) in ADMIN_IDS
+    kb_markup = kb.get_auction_keyboard(
+        auction_data['auction_id'],
+        auction_data['blitz_price'],
+        is_admin=is_admin)
 
     # Пытаемся отредактировать существующее сообщение (если это был callback)
     # или отправить новое (если это был /start)
@@ -1133,12 +1137,16 @@ async def show_auction_card(callback: CallbackQuery, state: FSMContext, bot: Bot
         return await back_to_menu(callback, state, bot)
 
     text = await format_auction_post(auction, bot)
+    is_admin = int(callback.from_user.id) in ADMIN_IDS
     await bot.edit_message_caption(
         chat_id=callback.message.chat.id,
         message_id=callback.message.message_id,
         caption=text,
         parse_mode="HTML",
-        reply_markup=kb.get_auction_keyboard(auction['auction_id'], auction['blitz_price'])
+        reply_markup=kb.get_auction_keyboard(
+            auction['auction_id'],
+            auction['blitz_price'],
+            is_admin=is_admin)
     )
     await callback.answer()
 
@@ -1415,12 +1423,16 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
     # Обновляем приватную карточку [cite: 207]
     new_text_private = f"✅ Ваша ставка: {bid_amount:,.0f} руб.\n\n" + new_text_channel
     try:
+        is_admin = int(message.from_user.id) in ADMIN_IDS
         await bot.edit_message_caption(
             chat_id=message.chat.id,
             message_id=menu_message_id,
             caption=new_text_private,
             parse_mode="HTML",
-            reply_markup=kb.get_auction_keyboard(auction['auction_id'], auction['blitz_price'])
+            reply_markup=kb.get_auction_keyboard(
+                auction['auction_id'],
+                auction['blitz_price'],
+                is_admin=is_admin)
         )
     except TelegramAPIError as e:
         logging.warning(f"Не удалось обновить приватную карточку для {message.chat.id}: {e}")
@@ -1536,6 +1548,135 @@ async def admin_unban_handle(message: Message, state: FSMContext, bot: Bot):
             reply_markup=kb_markup # Используем переменную с клавиатурой
         )
     except TelegramAPIError: pass
+
+
+async def _update_all_posts(bot: Bot, auction: dict):
+    """Обновляет пост в канале и возвращает обновленный текст."""
+    new_text_channel = await format_auction_post(auction, bot)
+    try:
+        await bot.edit_message_caption(
+            chat_id=CHANNEL_ID,
+            message_id=auction['channel_message_id'],
+            caption=new_text_channel,
+            parse_mode="HTML"
+        )
+    except TelegramAPIError as e:
+        logging.error(f"Не удалось обновить пост в канале {CHANNEL_ID} после ред.: {e}")
+    return new_text_channel
+
+
+# --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ РЕДАКТИРОВАНИЯ ---
+
+@router.callback_query(F.data.startswith("edit_auction_title_"))
+async def edit_auction_title_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    if int(callback.from_user.id) not in ADMIN_IDS:
+        return await callback.answer("Нет доступа", show_alert=True)
+
+    auction_id = int(callback.data.split("_")[-1])
+    await state.set_state(AdminActions.waiting_for_new_title)
+    await state.update_data(
+        auction_id=auction_id,
+        menu_message_id=callback.message.message_id
+    )
+
+    await bot.edit_message_caption(
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        caption=f"✏️ {hbold('Введите новое НАЗВАНИЕ лота:')}",
+        parse_mode="HTML",
+        reply_markup=kb.cancel_fsm_keyboard(f"show_auction_{auction_id}")
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("edit_auction_desc_"))
+async def edit_auction_desc_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    if int(callback.from_user.id) not in ADMIN_IDS:
+        return await callback.answer("Нет доступа", show_alert=True)
+
+    auction_id = int(callback.data.split("_")[-1])
+    await state.set_state(AdminActions.waiting_for_new_description)
+    await state.update_data(
+        auction_id=auction_id,
+        menu_message_id=callback.message.message_id
+    )
+
+    await bot.edit_message_caption(
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        caption=f"✏️ {hbold('Введите новое ОПИСАНИЕ лота:')}",
+        parse_mode="HTML",
+        reply_markup=kb.cancel_fsm_keyboard(f"show_auction_{auction_id}")
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(AdminActions.waiting_for_new_title), F.text)
+async def process_new_title(message: Message, state: FSMContext, bot: Bot):
+    await safe_delete_message(message)  # Удаляем сообщение админа с новым текстом
+    data = await state.get_data()
+    auction_id = data.get('auction_id')
+    menu_message_id = data.get('menu_message_id')
+    new_title = (message.text or "").strip()
+
+    if not new_title or len(new_title) > 120:
+        await bot.edit_message_caption(
+            chat_id=message.chat.id,
+            message_id=menu_message_id,
+            caption=f"❌ {hbold('Ошибка: Название (1-120 симв).')} Попробуйте снова:",
+            parse_mode="HTML",
+            reply_markup=kb.cancel_fsm_keyboard(f"show_auction_{auction_id}")
+        )
+        return
+
+    await db.update_auction_title(auction_id, new_title)
+    await state.clear()
+
+    auction = await db.get_active_auction()
+    new_caption = await _update_all_posts(bot, auction)  # Обновляем канал
+
+    # Возвращаем админу обновленную карточку
+    await bot.edit_message_caption(
+        chat_id=message.chat.id,
+        message_id=menu_message_id,
+        caption=f"✅ Название обновлено.\n\n{new_caption}",
+        parse_mode="HTML",
+        reply_markup=kb.get_auction_keyboard(auction['auction_id'], auction.get('blitz_price'), is_admin=True)
+    )
+
+
+@router.message(StateFilter(AdminActions.waiting_for_new_description), F.text)
+async def process_new_description(message: Message, state: FSMContext, bot: Bot):
+    await safe_delete_message(message)  # Удаляем сообщение админа с новым тексом
+    data = await state.get_data()
+    auction_id = data.get('auction_id')
+    menu_message_id = data.get('menu_message_id')
+    new_desc = (message.text or "").strip()
+
+    if not new_desc or len(new_desc) > 3000:
+        await bot.edit_message_caption(
+            chat_id=message.chat.id,
+            message_id=menu_message_id,
+            caption=f"❌ {hbold('Ошибка: Описание (1-3000 симв).')} Попробуйте снова:",
+            parse_mode="HTML",
+            reply_markup=kb.cancel_fsm_keyboard(f"show_auction_{auction_id}")
+        )
+        return
+
+    await db.update_auction_description(auction_id, new_desc)
+    await state.clear()
+
+    auction = await db.get_active_auction()
+    new_caption = await _update_all_posts(bot, auction)  # Обновляем канал
+
+    # Возвращаем админу обновленную карточку
+    await bot.edit_message_caption(
+        chat_id=message.chat.id,
+        message_id=menu_message_id,
+        caption=f"✅ Описание обновлено.\n\n{new_caption}",
+        parse_mode="HTML",
+        reply_markup=kb.get_auction_keyboard(auction['auction_id'], auction.get('blitz_price'), is_admin=True)
+    )
 
 
 @router.callback_query(F.data == "admin_toggle_auto_approve")

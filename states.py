@@ -31,3 +31,5 @@ class AdminActions(StatesGroup):
     waiting_for_ban_id = State()
     waiting_for_unban_id = State()
     waiting_for_decline_reason = State()
+    waiting_for_new_title = State()
+    waiting_for_new_description = State()

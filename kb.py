@@ -21,12 +21,18 @@ def get_main_menu():
     return builder.as_markup()
 
 
-def get_auction_keyboard(auction_id, blitz_price=None):
+def get_auction_keyboard(auction_id, blitz_price=None, is_admin: bool = False):
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="Сделать ставку", callback_data=f"bid_auction_{auction_id}"))
     if blitz_price and blitz_price > 0:
         builder.row(InlineKeyboardButton(text=f"⚡️ Блиц-цена: {blitz_price:,.0f} ₽",
                                          callback_data=f"blitz_auction_{auction_id}"))
+
+    if is_admin:
+        builder.row(
+            InlineKeyboardButton(text="✏️ Ред. Название", callback_data=f"edit_auction_title_{auction_id}"),
+            InlineKeyboardButton(text="✏️ Ред. Описание", callback_data=f"edit_auction_desc_{auction_id}")
+        )
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
     return builder.as_markup()
 

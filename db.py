@@ -377,3 +377,16 @@ async def set_auto_approve_status(enabled: bool):
             value_str
         )
         logging.info(f"Автопринятие заявок установлено в: {enabled}")
+
+
+async def update_auction_title(auction_id: int, new_title: str):
+    """Обновляет название аукциона."""
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE auctions SET title = $1 WHERE auction_id = $2", new_title, auction_id)
+        logging.info(f"Название аукциона {auction_id} обновлено.")
+
+async def update_auction_description(auction_id: int, new_description: str):
+    """Обновляет описание аукциона."""
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE auctions SET description = $1 WHERE auction_id = $2", new_description, auction_id)
+        logging.info(f"Описание аукциона {auction_id} обновлено.")
