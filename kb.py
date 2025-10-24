@@ -27,7 +27,7 @@ def get_auction_keyboard(auction_id, blitz_price=None, is_admin: bool = False):
     if blitz_price and blitz_price > 0:
         builder.row(InlineKeyboardButton(text=f"⚡️ Блиц-цена: {blitz_price:,.0f} ₽",
                                          callback_data=f"blitz_auction_{auction_id}"))
-
+    builder.row(InlineKeyboardButton(text="📜 Все ставки", callback_data=f"show_bids_{auction_id}_1"))
     if is_admin:
         builder.row(
             InlineKeyboardButton(text="✏️ Ред. Название", callback_data=f"edit_auction_title_{auction_id}"),
@@ -220,3 +220,26 @@ def admin_cancel_fsm_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_menu")]
     ])
+
+
+def bids_pagination_keyboard(auction_id: int, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    """
+    Клавиатура пагинации для списка ставок.
+    """
+    builder = InlineKeyboardBuilder()
+    nav_row = []
+
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"show_bids_{auction_id}_{page - 1}"))
+
+    nav_row.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"))
+
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"show_bids_{auction_id}_{page + 1}"))
+
+    if nav_row:
+        builder.row(*nav_row)
+
+    # Кнопка "Назад" должна возвращать на карточку аукциона
+    builder.row(InlineKeyboardButton(text="⬅️ Назад к лоту", callback_data=f"show_auction_{auction_id}"))
+    return builder.as_markup()

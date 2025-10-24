@@ -389,3 +389,25 @@ async def update_auction_description(auction_id: int, new_description: str):
     async with pool.acquire() as conn:
         await conn.execute("UPDATE auctions SET description = $1 WHERE auction_id = $2", new_description, auction_id)
         logging.info(f"Описание аукциона {auction_id} обновлено.")
+
+
+async def get_bids_page(auction_id: int, limit: int, offset: int) -> list[dict]:
+    """Возвращает страницу ставок по лоту, отсортированных от большей к меньшей."""
+    sql = """
+        SELECT b.*, u.username, u.tg_full_name
+        FROM bids b
+        JOIN users u ON b.user_id = u.user_id
+        WHERE b.auction_id = $1
+        ORDER BY b.bid_amount DESC, b.bid_time ASC
+        LIMIT $2 OFFSET $3
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, auction_id, limit, offset)
+        return [dict(r) for r in rows]
+
+async def count_bids(auction_id: int) -> int:
+    """Возвращает общее количество ставок по лоту."""
+    sql = "SELECT COUNT(*) FROM bids WHERE auction_id = $1"
+    async with pool.acquire() as conn:
+        count = await conn.fetchval(sql, auction_id)
+        return int(count)

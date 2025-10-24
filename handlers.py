@@ -207,7 +207,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
         username = last_bid.get('username')
         display_name = last_bid.get('tg_full_name') or f"User {user_id}"
         if username:
-            winner_display = f"@{username}"
+            winner_display = f"@{escape(username)}"
         else:
             winner_display = f'<a href="tg://user?id={user_id}">{escape(display_name)}</a>'
     # ---
@@ -243,7 +243,7 @@ async def format_auction_post(auction_data: dict, bot: Bot, finished: bool = Fal
             display_name_hist = b.get('tg_full_name') or f"User {user_id_hist}"  # Fallback
             user_disp = ""
             if username_hist:
-                user_disp = f"@{username_hist}"
+                user_disp = f"@{escape(username_hist)}"
             else:
                 user_disp = f'<a href="tg://user?id={user_id_hist}">{escape(display_name_hist)}</a>'
             # ---
@@ -335,7 +335,7 @@ async def show_auction_card_message(message: Message, bot: Bot, auction_data: di
                  chat_id=message.chat.id,
                  message_id=message.message_id,
                  media=InputMediaPhoto(media=auction_data['photo_id'], caption=text, parse_mode="HTML"),
-                 reply_markup=kb_markup
+                 reply_markup=kb_markup,
              )
         # Если было текстовое сообщение, пытаемся превратить в фото
         else:
@@ -826,6 +826,76 @@ async def menu_all_page(callback: CallbackQuery, bot: Bot):
     except Exception:
         page = 1
     await render_all_auctions_page(callback, bot, page=page)
+
+
+@router.callback_query(F.data.startswith("show_bids_"))
+async def show_all_bids(callback: CallbackQuery, bot: Bot):
+    """
+    Показывает историю ставок по лоту с пагинацией.
+    """
+    try:
+        parts = callback.data.split("_")
+        auction_id = int(parts[2])
+        page = int(parts[3])
+    except (IndexError, ValueError):
+        await callback.answer("Ошибка данных.", show_alert=True)
+        return
+
+    page_size = 10
+    offset = (page - 1) * page_size
+
+    total_bids = await db.count_bids(auction_id)
+
+    if total_bids == 0:
+        await callback.answer("По этому лоту еще нет ставок.", show_alert=True)
+        return
+
+    total_pages = max(1, (total_bids + page_size - 1) // page_size)
+    if page > total_pages:  # Если страница стала невалидной (ставки удалили?)
+        page = total_pages
+        offset = (page - 1) * page_size
+
+    bids_page = await db.get_bids_page(auction_id, limit=page_size, offset=offset)
+
+    lines = [f"<b>История ставок (Страница {page}/{total_pages}):</b>\n"]
+    for i, bid in enumerate(bids_page, start=offset + 1):
+        # --- Форматирование имени ---
+        user_id = bid['user_id']
+        username = bid.get('username')
+        display_name = bid.get('tg_full_name') or f"User {user_id}"
+        user_disp = f"@{escape(username)}" if username else f'<a href="tg://user?id={user_id}">{escape(display_name)}</a>'
+        # ---
+        bid_time_msk = bid['bid_time'].astimezone(MOSCOW_TZ).strftime('%d.%m %H:%M')
+        lines.append(f"{i}) <b>{bid['bid_amount']:,.0f} ₽</b> — {user_disp} ({bid_time_msk})")
+
+    text = "\n".join(lines)
+    kb_markup = kb.bids_pagination_keyboard(auction_id, page, total_pages)
+
+    try:
+        # Пытаемся отредактировать caption, т.к. мы на карточке лота
+        await bot.edit_message_caption(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=kb_markup
+        )
+    except TelegramAPIError as e:
+        # Если не вышло (например, сообщение слишком старое или другое),
+        # пробуем отредактировать как текст (на случай, если мы уже в этом меню)
+        if "message is not modified" not in str(e):
+            try:
+                await bot.edit_message_text(
+                    chat_id=callback.message.chat.id,
+                    message_id=callback.message.message_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=kb_markup
+                )
+            except TelegramAPIError as e2:
+                logging.error(f"Не удалось отредактировать страницу ставок (ни caption, ни text): {e2}")
+
+    await callback.answer()
 
 
 async def render_all_auctions_page(callback: CallbackQuery, bot: Bot, page: int, page_size: int = 5):
