@@ -1,4 +1,5 @@
 # kb.py
+from typing import Optional
 
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -21,18 +22,38 @@ def get_main_menu():
     return builder.as_markup()
 
 
-def get_auction_keyboard(auction_id, blitz_price=None, is_admin: bool = False):
+def get_auction_keyboard(
+        auction_id: int,
+        blitz_price: Optional[float],
+        participation_status: Optional[str],
+        is_admin: bool = False
+):
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="Сделать ставку", callback_data=f"bid_auction_{auction_id}"))
+
+    # --- ДИНАМИЧЕСКАЯ КНОПКА СТАВКИ/ЗАЯВКИ ---
+    if participation_status == 'approved':
+        builder.row(InlineKeyboardButton(text="Сделать ставку", callback_data=f"bid_auction_{auction_id}"))
+    elif participation_status == 'pending':
+        builder.row(InlineKeyboardButton(text="⏳ Заявка на рассмотрении", callback_data="noop"))
+    elif participation_status == 'rejected':
+        builder.row(InlineKeyboardButton(text="❌ Участие отклонено", callback_data="noop"))
+    else:  # status is None
+        builder.row(
+            InlineKeyboardButton(text="✅ Подать заявку на участие", callback_data=f"apply_auction_{auction_id}"))
+    # ---
+
     if blitz_price and blitz_price > 0:
         builder.row(InlineKeyboardButton(text=f"⚡️ Блиц-цена: {blitz_price:,.0f} ₽",
                                          callback_data=f"blitz_auction_{auction_id}"))
+
     builder.row(InlineKeyboardButton(text="📜 Все ставки", callback_data=f"show_bids_{auction_id}_1"))
+
     if is_admin:
         builder.row(
             InlineKeyboardButton(text="✏️ Ред. Название", callback_data=f"edit_auction_title_{auction_id}"),
             InlineKeyboardButton(text="✏️ Ред. Описание", callback_data=f"edit_auction_desc_{auction_id}")
         )
+
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu"))
     return builder.as_markup()
 
@@ -53,6 +74,17 @@ def admin_approval_keyboard(user_id):
         [
             InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_user_{user_id}"),
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"decline_user_{user_id}")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def admin_participation_keyboard(user_id: int, auction_id: int) -> InlineKeyboardMarkup:
+    """Кнопки одобрения/отклонения заявки на УЧАСТИЕ В ЛОТЕ."""
+    buttons = [
+        [
+            InlineKeyboardButton(text="✅ Одобрить участие", callback_data=f"approve_part_{user_id}_{auction_id}"),
+            InlineKeyboardButton(text="❌ Отклонить участие", callback_data=f"decline_part_{user_id}_{auction_id}")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)

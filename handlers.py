@@ -77,7 +77,10 @@ async def restrict_chat_middleware(handler, event, data):
     if is_admin_chat_event and isinstance(event, CallbackQuery):
         # Проверяем, что это колбэк одобрения/отклонения
         is_approval_callback = event.data and (
-                event.data.startswith("approve_user_") or event.data.startswith("decline_user_")
+                event.data.startswith("approve_user_") or
+                event.data.startswith("decline_user_") or
+                event.data.startswith("approve_part_") or  # Модерация участия
+                event.data.startswith("decline_part_")
         )
         if is_approval_callback:
             # Проверяем, что нажал админ
@@ -324,10 +327,21 @@ async def show_auction_card_message(message: Message, bot: Bot, auction_data: di
     """Отправляет или редактирует сообщение, показывая карточку аукциона."""
     text = await format_auction_post(auction_data, bot)
     is_admin = int(message.chat.id) in ADMIN_IDS
+
+    user_id = message.chat.id
+    participation_status = None
+    if not is_admin:  # Админы участвуют по умолчанию
+        participation_status = await db.get_participation_status(user_id, auction_data['auction_id'])
+    else:
+        participation_status = 'approved'  # Админ всегда одобрен
+    # ---
+
     kb_markup = kb.get_auction_keyboard(
         auction_data['auction_id'],
         auction_data['blitz_price'],
-        is_admin=is_admin)
+        participation_status=participation_status,
+        is_admin=is_admin
+    )
 
     try:
         if message.photo:
@@ -1166,6 +1180,199 @@ async def admin_winner_bid(callback: CallbackQuery, bot: Bot):
 
 # --- 4. ЛОГИКА СТАВОК (ИНЛАЙН FSM) ---
 
+
+@router.callback_query(F.data.startswith("apply_auction_"))
+async def apply_for_auction(callback: CallbackQuery, bot: Bot):
+    """Пользователь подает заявку на участие в аукционе."""
+    try:
+        auction_id = int(callback.data.split("_")[2])
+    except (IndexError, ValueError):
+        return await callback.answer("Ошибка ID аукциона.", show_alert=True)
+
+    user_id = callback.from_user.id
+    auction = await db.get_active_auction()
+
+    if not auction or auction['auction_id'] != auction_id:
+        return await callback.answer("Аукцион уже завершен.", show_alert=True)
+
+    # Проверяем, вдруг уже подал, пока думал
+    status = await db.get_participation_status(user_id, auction_id)
+    if status:
+        return await callback.answer("Вы уже подали заявку.", show_alert=True)
+
+    # Подаем заявку
+    await db.apply_for_participation(user_id, auction_id)
+
+    # Обновляем клавиатуру пользователя на "Ожидание"
+    is_admin = int(user_id) in ADMIN_IDS  # (тут будет False, но для полноты)
+    new_kb = kb.get_auction_keyboard(
+        auction_id,
+        auction['blitz_price'],
+        participation_status='pending',
+        is_admin=is_admin
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=new_kb)
+    except TelegramAPIError:
+        pass
+
+    await callback.answer("Заявка на участие отправлена на модерацию!", show_alert=True)
+
+    # Отправляем уведомление админу
+    user_info = callback.from_user
+    user_display = f"@{escape(user_info.username)}" if user_info.username else f'<a href="tg://user?id={user_info.id}">{escape(user_info.full_name)}</a>'
+
+    try:
+        await bot.send_message(
+            int(ADMIN_CHAT_ID),
+            f"Новая заявка на участие в лоте:\n«{escape(auction['title'])}»\n\n"
+            f"ID: <code>{user_info.id}</code>\n"
+            f"Пользователь: {user_display}",
+            parse_mode="HTML",
+            reply_markup=kb.admin_participation_keyboard(user_info.id, auction_id)
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить заявку на участие админу: {e}")
+
+
+# --- НОВЫЙ ОБРАБОТЧИК: Админ обновляет меню (если нужно) ---
+async def _try_update_user_menu_on_participation_update(bot: Bot, user_id: int, auction_id: int, new_part_status: str):
+    """(Вспомогательная) Пытается обновить меню пользователя, если он смотрит на этот лот."""
+    try:
+        # Проверяем, что лот, который модерируют, = активный лот
+        active_auction = await db.get_active_auction()
+        if not active_auction or active_auction['auction_id'] != auction_id:
+            return  # Лот уже неактивен, обновлять нечего
+
+        # Проверяем, что меню пользователя = ID лота
+        menu_id = await db.get_user_menu_message_id(user_id)
+        if not menu_id:
+            return  # У пользователя нет активного меню
+
+        # (Мы не можем 100% знать, что menu_id - это карточка аукциона,
+        # но если ID совпали, то 99% это так)
+
+        is_admin = int(user_id) in ADMIN_IDS  # (Будет False)
+        new_kb = kb.get_auction_keyboard(
+            auction_id,
+            active_auction['blitz_price'],
+            participation_status=new_part_status,
+            is_admin=is_admin
+        )
+        await bot.edit_message_reply_markup(
+            chat_id=user_id,
+            message_id=menu_id,
+            reply_markup=new_kb
+        )
+        logging.info(f"Обновлено меню участия (на {new_part_status}) для {user_id}")
+    except TelegramAPIError as e:
+        logging.warning(f"Не удалось 'вживую' обновить меню {user_id} при модерации: {e}")
+
+
+# --- НОВЫЙ ОБРАБОТЧИК: Одобрение участия ---
+@router.callback_query(F.data.startswith("approve_part_"))
+async def approve_participation(callback: CallbackQuery, bot: Bot):
+    if int(callback.from_user.id) not in ADMIN_IDS:
+        return await callback.answer("Нет доступа", show_alert=True)
+
+    try:
+        parts = callback.data.split("_")
+        user_id_str = parts[2]
+        auction_id_str = parts[3]
+        user_id = int(user_id_str)
+        auction_id = int(auction_id_str)
+    except Exception:
+        return await callback.answer("Ошибка данных.", show_alert=True)
+
+    await db.update_participation_status(user_id, auction_id, 'approved')
+    await callback.message.edit_text(f"✅ Участие для {user_id} в лоте {auction_id} ОДОБРЕНО.")
+    await callback.answer("Одобрено!")
+
+    try:
+        await bot.send_message(user_id,
+                               f"✅ Ваша заявка на участие в аукционе одобрена. Теперь вы можете делать ставки.")
+        # Пытаемся обновить меню пользователя "вживую"
+        await _try_update_user_menu_on_participation_update(bot, user_id, auction_id, 'approved')
+    except TelegramAPIError as e:
+        logging.warning(f"Не удалось уведомить {user_id} об одобрении участия: {e}")
+
+
+# --- НОВЫЙ ОБРАБОТЧИК: Отклонение участия (FSM) ---
+@router.callback_query(F.data.startswith("decline_part_"))
+async def decline_participation_start(callback: CallbackQuery, state: FSMContext):
+    if int(callback.from_user.id) not in ADMIN_IDS:
+        return await callback.answer("Нет доступа", show_alert=True)
+
+    try:
+        parts = callback.data.split("_")
+        user_id_str = parts[2]
+        auction_id_str = parts[3]
+        user_id = int(user_id_str)
+        auction_id = int(auction_id_str)
+    except Exception:
+        return await callback.answer("Ошибка данных.", show_alert=True)
+
+    await state.set_state(AdminActions.waiting_for_participation_decline_reason)
+    await state.update_data(
+        target_user_id=user_id,
+        target_auction_id=auction_id,
+        menu_message_id=callback.message.message_id
+    )
+
+    await callback.bot.edit_message_text(
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        text=(
+            f"Отклонение участия для <code>{user_id}</code> в лоте <code>{auction_id}</code>.\n"
+            f"{hbold('Введите причину отклонения:')}\n"
+            "Отправьте ‘-’ или ‘0’, чтобы отклонить без причины."
+        ),
+        parse_mode="HTML",
+        reply_markup=kb.admin_cancel_fsm_keyboard()
+    )
+    await callback.answer()
+
+
+# --- НОВЫЙ ОБРАБОТЧИК: Сохранение причины отклонения ---
+@router.message(StateFilter(AdminActions.waiting_for_participation_decline_reason))
+async def decline_participation_reason_process(message: Message, state: FSMContext, bot: Bot):
+    await safe_delete_message(message)
+
+    data = await state.get_data()
+    target_user_id = data.get('target_user_id')
+    target_auction_id = data.get('target_auction_id')
+    menu_message_id = data.get('menu_message_id')
+    reason = (message.text or '').strip()
+    no_reason = (reason in ('-', '0', ''))
+    reason_text = reason if not no_reason else "Без указания причины"
+
+    await db.update_participation_status(target_user_id, target_auction_id, 'rejected', reason=reason_text)
+
+    # Уведомляем пользователя
+    try:
+        notify_text = f"❌ Ваша заявка на участие в аукционе отклонена.\nПричина: {escape(reason_text)}"
+        await bot.send_message(target_user_id, notify_text)
+        # Пытаемся обновить меню пользователя "вживую"
+        await _try_update_user_menu_on_participation_update(bot, target_user_id, target_auction_id, 'rejected')
+    except TelegramAPIError as e:
+        logging.error(f"Не удалось уведомить {target_user_id} об отклонении участия: {e}")
+
+    # Возвращаем админа в админ-меню
+    await state.clear()
+    kb_markup = await kb.admin_menu_keyboard()
+    try:
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=menu_message_id,
+            text=f"❌ Участие для {target_user_id} в лоте {target_auction_id} ОТКЛОНЕНО.",
+            reply_markup=kb_markup
+        )
+    except TelegramAPIError:
+        await message.answer("❌ Заявка отклонена.", reply_markup=kb_markup)
+
+
+
+
 @router.callback_query(F.data.startswith("bid_auction_"))
 async def make_bid_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """Начало процесса ставки (FSM)."""
@@ -1179,6 +1386,18 @@ async def make_bid_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
         except Exception:
             pass
         return
+
+    user_id = callback.from_user.id
+    is_admin = int(user_id) in ADMIN_IDS
+    if not is_admin:  # Админов пропускаем
+        part_status = await db.get_participation_status(user_id, auction_id)
+
+        if part_status == 'pending':
+            return await callback.answer("Ваша заявка на участие еще на рассмотрении.", show_alert=True)
+        if part_status == 'rejected':
+            return await callback.answer("Вам было отказано в участии в этом лоте.", show_alert=True)
+        if part_status is None:
+            return await callback.answer("Ошибка: Пожалуйста, сначала подайте заявку на участие.", show_alert=True)
 
     # Проверка подписки (уже в middleware, но дублируем для кнопки "Проверить")
     if not await is_user_subscribed(bot, callback.from_user.id):
@@ -1251,14 +1470,22 @@ async def show_auction_card(callback: CallbackQuery, state: FSMContext, bot: Bot
     auction_id_str = callback.data.split("_")[2]
     auction_id = int(auction_id_str)
 
-    # Пытаемся получить аукцион по ID. Если неактивен, то get_active_auction() вернет None
     auction = await db.get_active_auction()
     if not auction or auction['auction_id'] != auction_id:
-        # Если аукцион кончился, пока мы были в FSM
         return await back_to_menu(callback, state, bot)
 
     text = await format_auction_post(auction, bot)
     is_admin = int(callback.from_user.id) in ADMIN_IDS
+
+    # --- НОВАЯ ЛОГИКА: Получаем статус участия ---
+    user_id = callback.from_user.id
+    participation_status = None
+    if not is_admin:
+        participation_status = await db.get_participation_status(user_id, auction['auction_id'])
+    else:
+        participation_status = 'approved'
+    # ---
+
     await bot.edit_message_caption(
         chat_id=callback.message.chat.id,
         message_id=callback.message.message_id,
@@ -1267,6 +1494,7 @@ async def show_auction_card(callback: CallbackQuery, state: FSMContext, bot: Bot
         reply_markup=kb.get_auction_keyboard(
             auction['auction_id'],
             auction['blitz_price'],
+            participation_status=participation_status,
             is_admin=is_admin)
     )
     await callback.answer()
@@ -1353,7 +1581,7 @@ async def blitz_buy_confirm_request(callback: CallbackQuery, bot: Bot, state: FS
     """
     Запрос подтверждения блиц-покупки (вместо мгновенной покупки).
     """
-    await state.clear()  # Сбрасываем FSM ставки, если пользователь был в нем
+    await state.clear()
 
     auction_id = int(callback.data.split("_")[2])
     auction = await db.get_active_auction()
@@ -1361,6 +1589,14 @@ async def blitz_buy_confirm_request(callback: CallbackQuery, bot: Bot, state: FS
     if not auction or auction['auction_id'] != auction_id:
         await callback.answer("Аукцион уже завершен или неактивен.", show_alert=True)
         return
+
+    user_id = callback.from_user.id
+    is_admin = int(user_id) in ADMIN_IDS
+
+    if not is_admin:  # Админов пропускаем
+        part_status = await db.get_participation_status(user_id, auction_id)
+        if part_status != 'approved':
+            return await callback.answer("Вы не допущены к участию в этом лоте. Подайте заявку.", show_alert=True)
 
     blitz_price = auction.get('blitz_price')
     if not blitz_price:
@@ -1547,6 +1783,7 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
     new_text_private = f"✅ Ваша ставка: {bid_amount:,.0f} руб.\n\n" + new_text_channel
     try:
         is_admin = int(message.from_user.id) in ADMIN_IDS
+        part_status = 'approved'
         await bot.edit_message_caption(
             chat_id=message.chat.id,
             message_id=menu_message_id,
@@ -1555,7 +1792,8 @@ async def process_bid_amount(message: Message, state: FSMContext, bot: Bot):
             reply_markup=kb.get_auction_keyboard(
                 auction['auction_id'],
                 auction['blitz_price'],
-                is_admin=is_admin)
+                is_admin=is_admin,
+            participation_status=part_status)
         )
     except TelegramAPIError as e:
         logging.warning(f"Не удалось обновить приватную карточку для {message.chat.id}: {e}")

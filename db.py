@@ -81,6 +81,18 @@ async def init_db():
                            );
                            ''')
 
+        await conn.execute('''
+                           CREATE TABLE IF NOT EXISTS auction_participants
+                           (
+                               participant_id   SERIAL PRIMARY KEY,
+                               user_id          BIGINT REFERENCES users (user_id) ON DELETE CASCADE,
+                               auction_id       INTEGER REFERENCES auctions (auction_id) ON DELETE CASCADE,
+                               status           TEXT DEFAULT 'pending', -- pending, approved, rejected
+                               rejection_reason TEXT,
+                               UNIQUE (user_id, auction_id)             -- Пользователь может подать заявку на 1 лот только один раз
+                           );
+                           ''')
+
         # --- НОВАЯ ТАБЛИЦА SETTINGS ---
         await conn.execute('''
                            CREATE TABLE IF NOT EXISTS settings
@@ -380,6 +392,34 @@ async def get_expired_active_auctions() -> list[dict]:
         rows = await conn.fetch(sql)
         return [dict(row) for row in rows]
 
+async def get_participation_status(user_id: int, auction_id: int) -> Optional[str]:
+    """Получает статус участия пользователя в аукционе (pending, approved, rejected) или None."""
+    sql = "SELECT status FROM auction_participants WHERE user_id = $1 AND auction_id = $2"
+    async with pool.acquire() as conn:
+        return await conn.fetchval(sql, user_id, auction_id)
+
+
+async def apply_for_participation(user_id: int, auction_id: int):
+    """Добавляет заявку пользователя на участие в статусе 'pending'."""
+    sql = """
+          INSERT INTO auction_participants (user_id, auction_id, status)
+          VALUES ($1, $2, 'pending')
+          ON CONFLICT (user_id, auction_id) DO NOTHING;
+          """
+    async with pool.acquire() as conn:
+        await conn.execute(sql, user_id, auction_id)
+
+
+async def update_participation_status(user_id: int, auction_id: int, status: str, reason: Optional[str] = None):
+    """Обновляет статус заявки на участие (approved/rejected)."""
+    sql = """
+          UPDATE auction_participants 
+          SET status = $1, rejection_reason = $2 
+          WHERE user_id = $3 AND auction_id = $4
+          """
+    async with pool.acquire() as conn:
+        await conn.execute(sql, status, reason, user_id, auction_id)
+        logging.info(f"Статус участия {user_id} в {auction_id} обновлен на {status}.")
 
 
 async def get_auto_approve_status() -> bool:
