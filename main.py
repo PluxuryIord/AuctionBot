@@ -4,10 +4,9 @@ import logging
 import os
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-# --- ИЗМЕНЕНО ---
-# aiogram 3.7+ требует DefaultBotProperties
+
 from aiogram.client.default import DefaultBotProperties
-# ---
+from collections import defaultdict
 from dotenv import load_dotenv
 
 from handlers import router
@@ -32,7 +31,7 @@ async def main():
     # ---
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
-
+    dp["last_start_time"] = defaultdict(float)
     # Подключение роутера
     dp.include_router(router)
 

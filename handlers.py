@@ -14,7 +14,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
 from aiogram.exceptions import TelegramAPIError
 from aiogram.utils.markdown import hbold
-
+import time
+from collections import defaultdict
 import db as db
 import kb
 from states import Registration, AuctionCreation, Bidding, AdminActions
@@ -55,13 +56,13 @@ async def restrict_chat_middleware(handler, event, data):
     Он блокирует все события вне ЛС, кроме кнопок модерации в админ-чате для админов.
     """
     chat = None
-    user = data.get('event_from_user') # Нужен для проверки админа
+    user = data.get('event_from_user')  # Нужен для проверки админа
 
     if isinstance(event, Message):
         chat = event.chat
     elif isinstance(event, CallbackQuery) and event.message:
         chat = event.message.chat
-    else: # Игнорируем другие типы событий (Poll, ChatMember, etc.)
+    else:  # Игнорируем другие типы событий (Poll, ChatMember, etc.)
         return
 
     is_private = chat.type == "private"
@@ -76,18 +77,19 @@ async def restrict_chat_middleware(handler, event, data):
     if is_admin_chat_event and isinstance(event, CallbackQuery):
         # Проверяем, что это колбэк одобрения/отклонения
         is_approval_callback = event.data and (
-            event.data.startswith("approve_user_") or event.data.startswith("decline_user_")
+                event.data.startswith("approve_user_") or event.data.startswith("decline_user_")
         )
         if is_approval_callback:
             # Проверяем, что нажал админ
             if user and int(user.id) in ADMIN_IDS:
-                return await handler(event, data) # Разрешаем админу модерировать
+                return await handler(event, data)  # Разрешаем админу модерировать
             else:
                 # Если нажал не админ (или user не определен)
                 try:
                     await event.answer("Это действие доступно только администраторам.", show_alert=True)
-                except TelegramAPIError: pass
-                return # Блокируем
+                except TelegramAPIError:
+                    pass
+                return  # Блокируем
 
     # 3. Блокируем все остальные события в не-приватных чатах
     if isinstance(event, CallbackQuery):
@@ -95,9 +97,10 @@ async def restrict_chat_middleware(handler, event, data):
         try:
             # Не показываем алерт, чтобы не спамить, если бот случайно в группе
             await event.answer("Эта функция доступна только в ЛС с ботом.")
-        except TelegramAPIError: pass
+        except TelegramAPIError:
+            pass
     # Сообщения в группах просто игнорируем (return без await handler)
-    return # Блокируем
+    return  # Блокируем
 
 
 @router.message.middleware()
@@ -112,7 +115,7 @@ async def user_status_middleware(handler, event, data):
     if not user:
         # Можно добавить логгирование, если нужно отлаживать события без пользователя
         # logging.warning("user_status_middleware: User not found in event.")
-        return # Игнорируем события без пользователя
+        return  # Игнорируем события без пользователя
 
     # Обновляем username (безопасно делать всегда)
     await db.update_user_tg_details(user.id, user.username, user.full_name)
@@ -134,7 +137,7 @@ async def user_status_middleware(handler, event, data):
     state: FSMContext = data.get('state')
     current_state = await state.get_state()
     if current_state and current_state.startswith("Registration:"):
-         return await handler(event, data)
+        return await handler(event, data)
 
     # Проверка статусов для обычных пользователей (только в ЛС)
     status = await db.get_user_status(user.id)
@@ -153,7 +156,7 @@ async def user_status_middleware(handler, event, data):
             await event.answer(block_reason)
         elif isinstance(event, CallbackQuery):
             await event.answer(block_reason, show_alert=True)
-        return # Прерываем
+        return  # Прерываем
 
     # Если статус 'approved' (и мы в ЛС), пропускаем дальше
     return await handler(event, data)
@@ -326,10 +329,7 @@ async def show_auction_card_message(message: Message, bot: Bot, auction_data: di
         auction_data['blitz_price'],
         is_admin=is_admin)
 
-    # Пытаемся отредактировать существующее сообщение (если это был callback)
-    # или отправить новое (если это был /start)
     try:
-        # Если у message есть photo, редактируем media
         if message.photo:
              await bot.edit_message_media(
                  chat_id=message.chat.id,
@@ -337,32 +337,33 @@ async def show_auction_card_message(message: Message, bot: Bot, auction_data: di
                  media=InputMediaPhoto(media=auction_data['photo_id'], caption=text, parse_mode="HTML"),
                  reply_markup=kb_markup,
              )
-        # Если было текстовое сообщение, пытаемся превратить в фото
+             # ID не менялся, в БД не пишем
         else:
              try:
-                 # Сначала удаляем старое текстовое
                  await message.delete()
-             except TelegramAPIError: pass # Игнорируем, если уже удалено
+             except TelegramAPIError: pass
              # Отправляем новое с фото
-             await message.answer_photo(
+             new_msg = await message.answer_photo(
                  photo=auction_data['photo_id'],
                  caption=text,
                  parse_mode="HTML",
                  reply_markup=kb_markup
              )
+             await db.update_user_menu_message_id(message.chat.id, new_msg.message_id) # Cохраняем ID
+
     except TelegramAPIError as e:
-         # Если редактирование не удалось (например, сообщение слишком старое или /start)
          logging.warning(f"Failed to edit message to auction card: {e}. Sending new one.")
          try:
-             await message.delete() # Пытаемся удалить старое, если возможно
+             await message.delete()
          except TelegramAPIError: pass
          # Отправляем новое сообщение с фото
-         await message.answer_photo(
+         new_msg = await message.answer_photo(
              photo=auction_data['photo_id'],
              caption=text,
              parse_mode="HTML",
              reply_markup=kb_markup
          )
+         await db.update_user_menu_message_id(message.chat.id, new_msg.message_id) # Cохраняем ID
 
 
 async def find_user_by_text(text: str) -> int | None:
@@ -395,6 +396,38 @@ async def safe_delete_message(message: Message):
         # Игнорируем ошибки, если сообщение уже удалено или у бота нет прав
         logging.warning(f"Failed to delete message {message.message_id}: {e}")
         pass
+
+
+async def safe_delete_old_menu(bot: Bot, user_id: int):
+    """
+    Пытается удалить или 'погасить' (🗑️) старое главное меню из БД.
+    Вызывается перед отправкой нового главного меню.
+    """
+    old_menu_id = await db.get_user_menu_message_id(user_id)
+    if old_menu_id:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=old_menu_id)
+            logging.debug(f"Удалено старое меню {old_menu_id} для {user_id}")
+        except TelegramAPIError as e:
+            # Если сообщение не найдено или слишком старое, 'гасим' его
+            if "message to delete not found" in str(e) or "message can't be deleted" in str(e):
+                try:
+                    await bot.edit_message_text(
+                        chat_id=user_id,
+                        message_id=old_menu_id,
+                        text="🗑️",  # Эмодзи корзины
+                        reply_markup=None
+                    )
+                    logging.debug(f"Старое меню {old_menu_id} 'погашено' для {user_id}")
+                except TelegramAPIError:
+                    pass  # Игнорируем, если и удалить, и отредактировать не вышло
+            else:
+                # Другие ошибки (например, нет прав)
+                logging.warning(f"Не удалось удалить старое меню {old_menu_id} для {user_id}: {e}")
+
+    # В любом случае, сбрасываем ID в БД, т.к. сейчас будет отправлено новое меню
+    # (даже если 'погасить' не вышло, оно больше не актуально)
+    await db.update_user_menu_message_id(user_id, None)
 
 
 # --- 1. РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЕЙ (НОВЫЙ ИНЛАЙН FSM) ---
@@ -437,16 +470,24 @@ async def render_registration_card(bot: Bot, chat_id: int, state: FSMContext, pr
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext, bot: Bot):
+async def cmd_start(message: Message, state: FSMContext, bot: Bot, last_start_time: defaultdict[float]):
     """
     Обработчик /start. Проверяет подписку, deep link.
     """
-    await state.clear() # Сбрасываем состояние
-
+    await safe_delete_message(message)
     user_id = message.from_user.id
+    current_time = time.time()
+    if current_time - last_start_time[user_id] < 1.0:
+        logging.info(f"Throttling /start for user {user_id}")
+        return  # Молча игнорируем
+    last_start_time[user_id] = current_time
+
+    await state.clear()  # Сбрасываем состояние
+    await safe_delete_old_menu(bot, user_id)
+
     user_status = await db.get_user_status(user_id)
-    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/Gem_box_channel1" # Fallback URL
-    deep_link_args = message.text.split() # Получаем аргументы /start
+    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/Gem_box_channel1"  # Fallback URL
+    deep_link_args = message.text.split()  # Получаем аргументы /start
     payload = deep_link_args[1] if len(deep_link_args) > 1 else None
 
     # --- ЛОГИКА DEEP LINK ---
@@ -455,16 +496,20 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         try:
             show_auction_id = int(payload.split("_")[-1])
         except (IndexError, ValueError):
-            show_auction_id = None # Неверный формат payload
+            show_auction_id = None  # Неверный формат payload
     # ---
 
     if int(user_id) in ADMIN_IDS:
         # Админу сразу показываем меню
-        await message.answer("Добро пожаловать в аукцион! (Админ)", reply_markup=kb.get_main_menu_admin())
+        new_msg = await message.answer("Добро пожаловать в аукцион! (Админ)", reply_markup=kb.get_main_menu_admin())
+        await db.update_user_menu_message_id(user_id, new_msg.message_id)  # Cохраняем ID
+
     elif user_status == 'banned':
-        await message.answer("Ваш доступ к боту заблокирован.")
+        await message.answer("Ваш доступ к боту заблокирован.")  # Меню не сохраняем
+
     elif user_status == 'pending':
-        await message.answer("Ваша заявка на регистрацию находится на рассмотрении.")
+        await message.answer("Ваша заявка на регистрацию находится на рассмотрении.")  # Меню не сохраняем
+
     elif user_status == 'approved':
         # Одобренный пользователь
         subscribed = await is_user_subscribed(bot, user_id)
@@ -474,18 +519,22 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
                 f"{channel_url}\n\n"
                 f"Подпишитесь и нажмите ‘Проверить подписку’.",
                 reply_markup=kb.subscribe_keyboard(channel_url)
-            )
+            )  # Меню не сохраняем (это временное сообщение)
         elif show_auction_id:
-             # Одобрен, подписан, есть deep link -> Показываем аукцион
-             auction = await db.get_active_auction() # Проверяем, что ID совпадает и аукцион активен
-             if auction and auction['auction_id'] == show_auction_id:
-                 await show_auction_card_message(message, bot, auction)
-             else:
-                 # Аукцион по ID не найден или неактивен
-                 await message.answer("Аукцион, на который вы перешли, уже неактивен.", reply_markup=kb.get_main_menu())
+            # Одобрен, подписан, есть deep link -> Показываем аукцион
+            auction = await db.get_active_auction()
+            if auction and auction['auction_id'] == show_auction_id:
+                # show_auction_card_message сама сохранит ID нового меню
+                await show_auction_card_message(message, bot, auction)
+            else:
+                # Аукцион по ID не найден или неактивен
+                new_msg = await message.answer("Аукцион, на который вы перешли, уже неактивен.",
+                                               reply_markup=kb.get_main_menu())
+                await db.update_user_menu_message_id(user_id, new_msg.message_id)  # Cохраняем ID
         else:
-             # Одобрен, подписан, нет deep link -> Главное меню
-             await message.answer("Добро пожаловать в аукцион!", reply_markup=kb.get_main_menu())
+            # Одобрен, подписан, нет deep link -> Главное меню
+            new_msg = await message.answer("Добро пожаловать в аукцион!", reply_markup=kb.get_main_menu())
+            await db.update_user_menu_message_id(user_id, new_msg.message_id)  # Cохраняем ID
     else:
         # НОВЫЙ ПОЛЬЗОВАТЕЛЬ
         subscribed = await is_user_subscribed(bot, user_id)
@@ -495,9 +544,10 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
                 f"{channel_url}\n\n"
                 f"Подпишитесь и нажмите ‘Проверить подписку’.",
                 reply_markup=kb.subscribe_keyboard(channel_url)
-            )
+            )  # Меню не сохраняем
         else:
             # Новый, подписан -> Начинаем регистрацию
+            # Это FSM-меню, его ID хранится в state.data, НЕ в БД.
             await state.set_state(Registration.waiting_for_full_name)
             menu_msg = await message.answer(
                 "Здравствуйте! Вы подписаны на канал, начинаем регистрацию.\n\n"
@@ -602,15 +652,10 @@ async def complete_registration(message: Message, state: FSMContext, bot: Bot, p
             text=status_message,
             reply_markup=final_markup
         )
-        # # Убираем Reply Keyboard, если она была
-        # await bot.send_message(
-        #     message.chat.id,
-        #     "Регистрация завершена.",
-        #     reply_markup=kb.remove_reply_keyboard(),
-        #     disable_notification=True
-        # )
-        # Удаляем временное сообщение "Регистрация завершена" через секунду
-        # TODO: Добавить удаление этого сообщения, если нужно
+        # --- ДОБАВЛЕНО: Сохраняем ID, если это стало главным меню ---
+        if auto_approve_enabled:
+            await db.update_user_menu_message_id(message.from_user.id, menu_message_id)
+        # ---
 
     except TelegramAPIError:
         pass
@@ -704,13 +749,14 @@ async def approve_user(callback: CallbackQuery, bot: Bot):
 
     try:
         # Отправляем стандартное сообщение пользователю с главным меню
-        await bot.send_message(user_id, APPROVAL_MESSAGE,
-                               reply_markup=kb.get_main_menu())
+        new_msg = await bot.send_message(user_id, APPROVAL_MESSAGE,
+                                         reply_markup=kb.get_main_menu())
+        await db.update_user_menu_message_id(user_id, new_msg.message_id)
     except TelegramAPIError as e:
         logging.error(f"Не удалось уведомить пользователя {user_id} об одобрении: {e}")
         # Сообщаем админу об ошибке уведомления
         await callback.answer(f"Пользователь {user_id} одобрен, но не удалось отправить уведомление.", show_alert=True)
-        return # Выходим, чтобы не было двойного callback.answer()
+        return  # Выходим, чтобы не было двойного callback.answer()
 
     await callback.answer(f"Пользователь {user_id} одобрен и уведомлен.")
 
@@ -770,7 +816,7 @@ async def decline_reason_process(message: Message, state: FSMContext, bot: Bot):
 
     # Возвращаем админа в админ-меню
     await state.clear()
-    kb_markup = await kb.admin_menu_keyboard() # Получаем актуальную клавиатуру
+    kb_markup = await kb.admin_menu_keyboard()  # Получаем актуальную клавиатуру
     try:
         await bot.edit_message_text(
             chat_id=message.chat.id,
@@ -797,12 +843,14 @@ async def menu_current(callback: CallbackQuery, bot: Bot):
                 text="На данный момент активных аукционов нет.",
                 reply_markup=kb.back_to_menu_keyboard()
             )
-        except TelegramAPIError: # Если не смогли отредактировать (было фото?), удаляем и шлем новое
-            try: await callback.message.delete()
-            except TelegramAPIError: pass
+        except TelegramAPIError:  # Если не смогли отредактировать (было фото?), удаляем и шлем новое
+            try:
+                await callback.message.delete()
+            except TelegramAPIError:
+                pass
             await callback.message.answer(
-                 "На данный момент активных аукционов нет.",
-                 reply_markup=kb.back_to_menu_keyboard()
+                "На данный момент активных аукционов нет.",
+                reply_markup=kb.back_to_menu_keyboard()
             )
         await callback.answer()
         return
@@ -957,7 +1005,6 @@ async def back_to_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
     keyboard = kb.get_main_menu_admin() if int(callback.from_user.id) in ADMIN_IDS else kb.get_main_menu()
     text = "Добро пожаловать в аукцион!"
-
     try:
         await bot.edit_message_text(
             chat_id=callback.message.chat.id,
@@ -965,6 +1012,8 @@ async def back_to_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
             text=text,
             reply_markup=keyboard
         )
+        # Cохраняем ID (сообщение отредактировано и стало главным меню)
+        await db.update_user_menu_message_id(callback.from_user.id, callback.message.message_id)
     except TelegramAPIError as e:
         logging.warning(f"Failed to edit to text menu: {e}. Re-sending message.")
         try:
@@ -972,7 +1021,8 @@ async def back_to_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
         except TelegramAPIError:
             pass
 
-        await callback.message.answer(text, reply_markup=keyboard)
+        new_msg = await callback.message.answer(text, reply_markup=keyboard)
+        await db.update_user_menu_message_id(callback.message.chat.id, new_msg.message_id)  # Cохраняем ID
 
     await callback.answer()
 
@@ -986,28 +1036,29 @@ async def admin_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
 
     text = "Админ-панель: выберите действие"
-    # Получаем актуальную клавиатуру
-    kb_markup = await kb.admin_menu_keyboard() # Используем await, т.к. функция стала async
+    kb_markup = await kb.admin_menu_keyboard()
 
     try:
-        # Всегда редактируем текст, так как админ-меню текстовое
         await bot.edit_message_text(
             chat_id=callback.message.chat.id,
             message_id=callback.message.message_id,
             text=text,
             reply_markup=kb_markup
         )
+        # Cохраняем ID (сообщение отредактировано и стало админ-меню)
+        await db.update_user_menu_message_id(callback.from_user.id, callback.message.message_id)
     except TelegramAPIError as e:
-        # Если не смогли отредактировать (например, сообщение удалено)
+         # Если не смогли отредактировать (например, сообщение удалено)
         logging.warning(f"Failed to edit admin menu: {e}. Sending new one.")
         try:
-            # Попытка удалить старое, если возможно
             await callback.message.delete()
         except TelegramAPIError: pass
         # Отправляем новое
-        await callback.message.answer(text, reply_markup=kb_markup)
+        new_msg = await callback.message.answer(text, reply_markup=kb_markup)
+        await db.update_user_menu_message_id(callback.message.chat.id, new_msg.message_id) # Cохраняем ID
 
     await callback.answer()
+
 
 @router.callback_query(F.data == "admin_finish")
 async def admin_finish(callback: CallbackQuery, bot: Bot):
@@ -1242,6 +1293,8 @@ async def check_subscription_generic(callback: CallbackQuery, bot: Bot, state: F
                 "Подписка подтверждена! Добро пожаловать!",
                 reply_markup=kb.get_main_menu()
             )
+            # Cохраняем ID (сообщение отредактировано и стало главным меню)
+            await db.update_user_menu_message_id(user_id, callback.message.message_id)
             await callback.answer()
         elif user_status is None:
             # Новый пользователь подписался -> начинаем FSM регистрации
@@ -1562,9 +1615,10 @@ async def admin_ban_handle(message: Message, state: FSMContext, bot: Bot):
                 message_id=menu_message_id,
                 text=f"❌ Пользователь не найден.\n{hbold('Введите ID / @username / телефон:')}",
                 parse_mode="HTML",
-                reply_markup=kb.admin_cancel_fsm_keyboard() # Клавиатура "Отмена" остается синхронной
+                reply_markup=kb.admin_cancel_fsm_keyboard()  # Клавиатура "Отмена" остается синхронной
             )
-        except TelegramAPIError: pass
+        except TelegramAPIError:
+            pass
         return
 
     await db.update_user_status(target_user_id, 'banned')
@@ -1578,9 +1632,10 @@ async def admin_ban_handle(message: Message, state: FSMContext, bot: Bot):
             chat_id=message.chat.id,
             message_id=menu_message_id,
             text=f"✅ Пользователь {target_user_id} забанен.",
-            reply_markup=kb_markup # Используем переменную с клавиатурой
+            reply_markup=kb_markup  # Используем переменную с клавиатурой
         )
-    except TelegramAPIError: pass
+    except TelegramAPIError:
+        pass
 
 
 @router.message(StateFilter(AdminActions.waiting_for_unban_id), F.from_user.id.in_(ADMIN_IDS))
@@ -1599,9 +1654,10 @@ async def admin_unban_handle(message: Message, state: FSMContext, bot: Bot):
                 message_id=menu_message_id,
                 text=f"❌ Пользователь не найден.\n{hbold('Введите ID / @username / телефон:')}",
                 parse_mode="HTML",
-                reply_markup=kb.admin_cancel_fsm_keyboard() # Клавиатура "Отмена" остается синхронной
+                reply_markup=kb.admin_cancel_fsm_keyboard()  # Клавиатура "Отмена" остается синхронной
             )
-        except TelegramAPIError: pass
+        except TelegramAPIError:
+            pass
         return
 
     await db.update_user_status(target_user_id, 'approved')
@@ -1615,9 +1671,10 @@ async def admin_unban_handle(message: Message, state: FSMContext, bot: Bot):
             chat_id=message.chat.id,
             message_id=menu_message_id,
             text=f"✅ Пользователь {target_user_id} разбанен.",
-            reply_markup=kb_markup # Используем переменную с клавиатурой
+            reply_markup=kb_markup  # Используем переменную с клавиатурой
         )
-    except TelegramAPIError: pass
+    except TelegramAPIError:
+        pass
 
 
 async def _update_all_posts(bot: Bot, auction: dict):
@@ -1810,7 +1867,7 @@ async def bulk_decline_pending(callback: CallbackQuery, bot: Bot):
         return await callback.answer("Нет пользователей, ожидающих одобрения.", show_alert=True)
 
     user_ids = [user['user_id'] for user in pending_users]
-    updated_count = await db.bulk_update_user_status(user_ids, 'banned') # Ставим статус banned
+    updated_count = await db.bulk_update_user_status(user_ids, 'banned')  # Ставим статус banned
 
     # Уведомляем пользователей
     notification_errors = 0
@@ -1826,7 +1883,6 @@ async def bulk_decline_pending(callback: CallbackQuery, bot: Bot):
     if notification_errors > 0:
         alert_text += f" Не удалось уведомить {notification_errors}."
     await callback.answer(alert_text, show_alert=True)
-
 
 
 # --- 6. СОЗДАНИЕ АУКЦИОНА (ИНЛАЙН FSM) ---
@@ -1899,7 +1955,8 @@ async def render_auction_creation_card(
         logging.error(f"Failed to render creation card: {e}. State: {await state.get_state()} Data: {data}")
         if "message to edit not found" in str(e) or "message to delete not found" in str(e):
             await state.clear()
-            await bot.send_message(chat_id, "Произошла ошибка, FSM сброшен.", reply_markup=await kb.admin_menu_keyboard())
+            await bot.send_message(chat_id, "Произошла ошибка, FSM сброшен.",
+                                   reply_markup=await kb.admin_menu_keyboard())
 
 
 async def return_to_confirmation(bot: Bot, chat_id: int, state: FSMContext):

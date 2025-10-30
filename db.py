@@ -66,6 +66,7 @@ async def init_db():
                            ''')
         # На случай, если таблица уже существовала раньше — добавим новые столбцы
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tg_full_name TEXT")
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS menu_message_id BIGINT")
         await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS cooldown_minutes INTEGER DEFAULT 10")
         await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS cooldown_off_before_end_minutes INTEGER DEFAULT 30")
 
@@ -126,6 +127,26 @@ async def get_user_status(user_id: int) -> Optional[str]:
         status = await conn.fetchval("SELECT status FROM users WHERE user_id = $1", user_id)
         return status
 
+
+async def update_user_menu_message_id(user_id: int, message_id: Optional[int]):
+    """
+    Обновляет ID 'главного' меню пользователя.
+    Устанавливает None, если меню было удалено или заменено.
+    """
+    if not pool:
+        logging.warning("update_user_menu_message_id: Пул не инициализирован.")
+        return
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET menu_message_id = $1 WHERE user_id = $2", message_id, user_id)
+
+
+async def get_user_menu_message_id(user_id: int) -> Optional[int]:
+    """Получает ID 'главного' меню пользователя."""
+    if not pool:
+        logging.warning("get_user_menu_message_id: Пул не инициализирован.")
+        return None
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT menu_message_id FROM users WHERE user_id = $1", user_id)
 
 async def update_user_status(user_id: int, status: str):
     """Обновляет статус пользователя (approved, banned)."""
