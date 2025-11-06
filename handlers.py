@@ -500,7 +500,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot, last_start_ti
     await safe_delete_old_menu(bot, user_id)
 
     user_status = await db.get_user_status(user_id)
-    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/Gem_box_channel1"  # Fallback URL
+    channel_url = f"https://t.me/{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "https://t.me/gem_box_channel"  # Fallback URL
     deep_link_args = message.text.split()  # Получаем аргументы /start
     payload = deep_link_args[1] if len(deep_link_args) > 1 else None
 
