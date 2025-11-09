@@ -140,6 +140,18 @@ async def get_user_status(user_id: int) -> Optional[str]:
         return status
 
 
+async def get_user_details(user_id: int) -> Optional[Dict[str, Any]]:
+    """Получает полные данные пользователя (ФИО, телефон) по ID."""
+    sql = "SELECT user_id, username, full_name, tg_full_name, phone_number, status FROM users WHERE user_id = $1"
+    if not pool:
+        logging.warning("get_user_details: Пул не инициализирован.")
+        return None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(sql, user_id)
+        return dict(row) if row else None
+
+
+
 async def update_user_menu_message_id(user_id: int, message_id: Optional[int]):
     """
     Обновляет ID 'главного' меню пользователя.

@@ -1204,7 +1204,7 @@ async def apply_for_auction(callback: CallbackQuery, bot: Bot):
     await db.apply_for_participation(user_id, auction_id)
 
     # Обновляем клавиатуру пользователя на "Ожидание"
-    is_admin = int(user_id) in ADMIN_IDS  # (тут будет False, но для полноты)
+    is_admin = int(user_id) in ADMIN_IDS
     new_kb = kb.get_auction_keyboard(
         auction_id,
         auction['blitz_price'],
@@ -1218,16 +1218,31 @@ async def apply_for_auction(callback: CallbackQuery, bot: Bot):
 
     await callback.answer("Заявка на участие отправлена на модерацию!", show_alert=True)
 
-    # Отправляем уведомление админу
+    # --- ИЗМЕНЕНИЯ ЗДЕСЬ: Отправляем уведомление админу ---
+
+    # 1. Получаем данные из Telegram
     user_info = callback.from_user
     user_display = f"@{escape(user_info.username)}" if user_info.username else f'<a href="tg://user?id={user_info.id}">{escape(user_info.full_name)}</a>'
 
+    # 2. Получаем данные (ФИО, Телефон) из нашей БД
+    user_details = await db.get_user_details(user_id)
+
+    fio_text = "Не указано"
+    phone_text = "Не указан"
+
+    if user_details:
+        fio_text = escape(user_details.get('full_name') or "Не указано")
+        phone_text = escape(user_details.get('phone_number') or "Не указан")
+
     try:
+        # 3. Собираем новое сообщение
         await bot.send_message(
             int(ADMIN_CHAT_ID),
             f"Новая заявка на участие в лоте:\n«{escape(auction['title'])}»\n\n"
             f"ID: <code>{user_info.id}</code>\n"
-            f"Пользователь: {user_display}",
+            f"Пользователь: {user_display}\n"
+            f"ФИО (из заявки): {fio_text}\n"
+            f"Телефон: <code>{phone_text}</code>",
             parse_mode="HTML",
             reply_markup=kb.admin_participation_keyboard(user_info.id, auction_id)
         )
