@@ -10,7 +10,7 @@ class Registration(StatesGroup):
 class AuctionCreation(StatesGroup):
     waiting_for_title = State()
     waiting_for_description = State()
-    waiting_for_photo = State()
+    waiting_for_media = State()
     waiting_for_start_price = State()
     waiting_for_min_step = State()
     waiting_for_cooldown_minutes = State()

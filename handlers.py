@@ -8,7 +8,7 @@ import csv
 from html import escape
 
 from aiogram import Router, F, Bot, types
-from aiogram.types import Message, CallbackQuery, User, InputMediaPhoto, BufferedInputFile
+from aiogram.types import Message, CallbackQuery, User, InputMediaPhoto, InputMediaVideo, BufferedInputFile
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
@@ -343,41 +343,64 @@ async def show_auction_card_message(message: Message, bot: Bot, auction_data: di
         is_admin=is_admin
     )
 
+    media_type = auction_data.get('media_type', 'photo')
+    media_id = auction_data.get('photo_id')
+
     try:
-        if message.photo:
-             await bot.edit_message_media(
-                 chat_id=message.chat.id,
-                 message_id=message.message_id,
-                 media=InputMediaPhoto(media=auction_data['photo_id'], caption=text, parse_mode="HTML"),
-                 reply_markup=kb_markup,
-             )
-             # ID не менялся, в БД не пишем
+        if message.photo or message.video:
+            if media_type == 'video':
+                media = InputMediaVideo(media=media_id, caption=text, parse_mode="HTML")
+            else:
+                media = InputMediaPhoto(media=media_id, caption=text, parse_mode="HTML")
+            await bot.edit_message_media(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                media=media,
+                reply_markup=kb_markup,
+            )
+            # ID не менялся, в БД не пишем
         else:
-             try:
-                 await message.delete()
-             except TelegramAPIError: pass
-             # Отправляем новое с фото
-             new_msg = await message.answer_photo(
-                 photo=auction_data['photo_id'],
-                 caption=text,
-                 parse_mode="HTML",
-                 reply_markup=kb_markup
-             )
-             await db.update_user_menu_message_id(message.chat.id, new_msg.message_id) # Cохраняем ID
+            try:
+                await message.delete()
+            except TelegramAPIError: pass
+            # Отправляем новое с медиа
+            if media_type == 'video':
+                new_msg = await message.answer_video(
+                    video=media_id,
+                    caption=text,
+                    parse_mode="HTML",
+                    reply_markup=kb_markup
+                )
+            else:
+                new_msg = await message.answer_photo(
+                    photo=media_id,
+                    caption=text,
+                    parse_mode="HTML",
+                    reply_markup=kb_markup
+                )
+            await db.update_user_menu_message_id(message.chat.id, new_msg.message_id)
 
     except TelegramAPIError as e:
-         logging.warning(f"Failed to edit message to auction card: {e}. Sending new one.")
-         try:
-             await message.delete()
-         except TelegramAPIError: pass
-         # Отправляем новое сообщение с фото
-         new_msg = await message.answer_photo(
-             photo=auction_data['photo_id'],
-             caption=text,
-             parse_mode="HTML",
-             reply_markup=kb_markup
-         )
-         await db.update_user_menu_message_id(message.chat.id, new_msg.message_id) # Cохраняем ID
+        logging.warning(f"Failed to edit message to auction card: {e}. Sending new one.")
+        try:
+            await message.delete()
+        except TelegramAPIError: pass
+        # Отправляем новое сообщение с медиа
+        if media_type == 'video':
+            new_msg = await message.answer_video(
+                video=media_id,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=kb_markup
+            )
+        else:
+            new_msg = await message.answer_photo(
+                photo=media_id,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=kb_markup
+            )
+        await db.update_user_menu_message_id(message.chat.id, new_msg.message_id)
 
 
 async def find_user_by_text(text: str) -> int | None:
@@ -2159,7 +2182,8 @@ async def render_auction_creation_card(
 
     title = escape(data.get('title', '...'))
     desc = escape(data.get('description', '...'))
-    photo = data.get('photo', None)
+    media_id = data.get('media_id', None)
+    media_type = data.get('media_type', 'photo')
     start_price = data.get('start_price', '...')
     min_step = data.get('min_step', '...')
     cooldown = data.get('cooldown_minutes', '...')
@@ -2169,11 +2193,15 @@ async def render_auction_creation_card(
     if isinstance(end_time, datetime):
         end_time = end_time.strftime("%d.%m.%Y %H:%M")
 
+    media_status = '...'
+    if media_id:
+        media_status = '✅ Фото' if media_type == 'photo' else '✅ Видео'
+
     text = (
         f"<b>--- Создание аукциона ---</b>\n\n"
         f"1. Название: <code>{title}</code>\n"
         f"2. Описание: <code>{escape(desc[:50])}...</code>\n"
-        f"3. Фото: <code>{'✅ Загружено' if photo else '...'}</code>\n"
+        f"3. Медиа: <code>{media_status}</code>\n"
         f"4. Старт. цена: <code>{start_price}</code>\n"
         f"5. Мин. шаг: <code>{min_step}</code>\n"
         f"6. Кулдаун (мин): <code>{cooldown}</code>\n"
@@ -2184,21 +2212,27 @@ async def render_auction_creation_card(
     )
 
     kb_markup = kb_override if kb_override else kb.admin_cancel_fsm_keyboard()
-    is_photo_card = data.get('is_photo_card', False)
+    is_media_card = data.get('is_media_card', False)
 
     try:
-        if photo and is_photo_card:
+        if media_id and is_media_card:
             await bot.edit_message_caption(
                 chat_id=chat_id, message_id=menu_message_id, caption=text,
                 parse_mode="HTML", reply_markup=kb_markup
             )
-        elif photo and not is_photo_card:
+        elif media_id and not is_media_card:
             await bot.delete_message(chat_id, menu_message_id)
-            new_msg = await bot.send_photo(
-                chat_id=chat_id, photo=photo, caption=text,
-                parse_mode="HTML", reply_markup=kb_markup
-            )
-            await state.update_data(menu_message_id=new_msg.message_id, is_photo_card=True)
+            if media_type == 'video':
+                new_msg = await bot.send_video(
+                    chat_id=chat_id, video=media_id, caption=text,
+                    parse_mode="HTML", reply_markup=kb_markup
+                )
+            else:
+                new_msg = await bot.send_photo(
+                    chat_id=chat_id, photo=media_id, caption=text,
+                    parse_mode="HTML", reply_markup=kb_markup
+                )
+            await state.update_data(menu_message_id=new_msg.message_id, is_media_card=True)
         else:
             await bot.edit_message_text(
                 chat_id=chat_id, message_id=menu_message_id, text=text,
@@ -2278,28 +2312,43 @@ async def process_auction_desc(message: Message, state: FSMContext, bot: Bot):
     if data.get('editing', False):
         await return_to_confirmation(bot, message.chat.id, state)
     else:
-        await state.set_state(AuctionCreation.waiting_for_photo)
+        await state.set_state(AuctionCreation.waiting_for_media)
         await render_auction_creation_card(
             bot=bot, chat_id=message.chat.id, state=state,
-            prompt="Шаг 3/9: Отправьте фотографию лота:"
+            prompt="Шаг 3/9: Отправьте фото или видео лота:"
         )
 
 
-@router.message(StateFilter(AuctionCreation.waiting_for_photo), ~F.photo)
-async def process_auction_wrong_photo(message: Message, state: FSMContext, bot: Bot):
+@router.message(StateFilter(AuctionCreation.waiting_for_media), ~F.photo & ~F.video)
+async def process_auction_wrong_media(message: Message, state: FSMContext, bot: Bot):
     await safe_delete_message(message)
     await render_auction_creation_card(
         bot=bot, chat_id=message.chat.id, state=state,
-        prompt=f"{hbold('Ошибка: Пожалуйста, отправьте именно фотографию.')} Попробуйте снова:"
+        prompt=f"{hbold('Ошибка: Пожалуйста, отправьте фото или видео.')} Попробуйте снова:"
     )
     return
 
 
-@router.message(StateFilter(AuctionCreation.waiting_for_photo), F.photo)
+@router.message(StateFilter(AuctionCreation.waiting_for_media), F.photo)
 async def process_auction_photo(message: Message, state: FSMContext, bot: Bot):
     await safe_delete_message(message)
     data = await state.get_data()
-    await state.update_data(photo=message.photo[-1].file_id)
+    await state.update_data(media_id=message.photo[-1].file_id, media_type='photo')
+    if data.get('editing', False):
+        await return_to_confirmation(bot, message.chat.id, state)
+    else:
+        await state.set_state(AuctionCreation.waiting_for_start_price)
+        await render_auction_creation_card(
+            bot=bot, chat_id=message.chat.id, state=state,
+            prompt="Шаг 4/9: Введите начальную цену (число):"
+        )
+
+
+@router.message(StateFilter(AuctionCreation.waiting_for_media), F.video)
+async def process_auction_video(message: Message, state: FSMContext, bot: Bot):
+    await safe_delete_message(message)
+    data = await state.get_data()
+    await state.update_data(media_id=message.video.file_id, media_type='video')
     if data.get('editing', False):
         await return_to_confirmation(bot, message.chat.id, state)
     else:
@@ -2467,12 +2516,12 @@ async def process_auction_end_time(message: Message, state: FSMContext, bot: Bot
 async def confirm_auction_post(callback: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
     menu_message_id = data.get('menu_message_id')
-    if not data.get('photo'):
-        await callback.answer("Ошибка: Фотография не загружена.", show_alert=True)
+    if not data.get('media_id'):
+        await callback.answer("Ошибка: Медиа (фото/видео) не загружено.", show_alert=True)
         await confirm_auction_edit(callback, state, bot)
         return
     try:
-        if data.get('is_photo_card', False):
+        if data.get('is_media_card', False):
             await bot.edit_message_caption(
                 chat_id=callback.message.chat.id, message_id=menu_message_id,
                 caption="Публикация...", reply_markup=None
@@ -2489,10 +2538,17 @@ async def confirm_auction_post(callback: CallbackQuery, state: FSMContext, bot: 
         auction_id = await db.create_auction(data)
         auction_data_full = await db.get_active_auction()
         text = await format_auction_post(auction_data_full, bot)
-        sent_message = await bot.send_photo(
-            chat_id=CHANNEL_ID, photo=data['photo'],
-            caption=text, parse_mode="HTML"
-        )
+        media_type = data.get('media_type', 'photo')
+        if media_type == 'video':
+            sent_message = await bot.send_video(
+                chat_id=CHANNEL_ID, video=data['media_id'],
+                caption=text, parse_mode="HTML"
+            )
+        else:
+            sent_message = await bot.send_photo(
+                chat_id=CHANNEL_ID, photo=data['media_id'],
+                caption=text, parse_mode="HTML"
+            )
         await db.set_auction_message_id(auction_id, sent_message.message_id)
         try:
             await bot.delete_message(chat_id=callback.message.chat.id, message_id=menu_message_id)
@@ -2541,7 +2597,7 @@ async def process_auction_edit_choice(callback: CallbackQuery, state: FSMContext
     field_to_state_map = {
         "title": (AuctionCreation.waiting_for_title, "Шаг 1: Введите новое название:"),
         "desc": (AuctionCreation.waiting_for_description, "Шаг 2: Введите новое описание:"),
-        "photo": (AuctionCreation.waiting_for_photo, "Шаг 3: Отправьте новое фото:"),
+        "photo": (AuctionCreation.waiting_for_media, "Шаг 3: Отправьте новое фото или видео:"),
         "price": (AuctionCreation.waiting_for_start_price, "Шаг 4: Введите новую старт. цену:"),
         "step": (AuctionCreation.waiting_for_min_step, "Шаг 5: Введите новый мин. шаг:"),
         "cooldown": (AuctionCreation.waiting_for_cooldown_minutes, "Шаг 6: Введите новый кулдаун:"),

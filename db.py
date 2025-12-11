@@ -69,6 +69,7 @@ async def init_db():
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS menu_message_id BIGINT")
         await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS cooldown_minutes INTEGER DEFAULT 10")
         await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS cooldown_off_before_end_minutes INTEGER DEFAULT 30")
+        await conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS media_type TEXT DEFAULT 'photo'")
 
         await conn.execute('''
                            CREATE TABLE IF NOT EXISTS bids
@@ -231,8 +232,8 @@ async def create_auction(data: Dict[str, Any]) -> int:
     """Создает новый аукцион и возвращает его ID."""
     sql = """
           INSERT INTO auctions
-          (title, description, photo_id, start_price, min_step, cooldown_minutes, cooldown_off_before_end_minutes, blitz_price, end_time)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          (title, description, photo_id, media_type, start_price, min_step, cooldown_minutes, cooldown_off_before_end_minutes, blitz_price, end_time)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           RETURNING auction_id; \
           """
     async with pool.acquire() as conn:
@@ -240,7 +241,8 @@ async def create_auction(data: Dict[str, Any]) -> int:
             sql,
             data['title'],
             data['description'],
-            data['photo'],
+            data['media_id'],
+            data.get('media_type', 'photo'),
             data['start_price'],
             data['min_step'],
             data['cooldown_minutes'],
